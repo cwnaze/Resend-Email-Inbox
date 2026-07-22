@@ -31,8 +31,8 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Installed drizzle-orm, @libsql/client, drizzle-kit. Added src/lib/server/db/schema.ts (empty baseline module), src/lib/server/db/index.ts (drizzle(libsql) client), drizzle.config.ts (dialect: 'turso'), and npm scripts db:push/db:generate/db:studio. `npm run db:push --force` applied cleanly against the real Turso instance already provisioned in .env ('No changes detected' for the empty baseline). Full schema (contacts/threads/emails/attachments/auth_codes/sessions) is deferred to US-D01 per prd-data-model.md. See docs/demos/US-A01.md for verification proof."
     },
     {
       "id": "US-A02",

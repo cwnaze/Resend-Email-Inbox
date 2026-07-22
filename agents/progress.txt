@@ -3,6 +3,8 @@
 - `@sveltejs/adapter-vercel` runtime auto-detection rejects Node versions outside 20/22/24; pass an explicit `runtime` (e.g. `'nodejs22.x'`) to the adapter if the build/dev machine runs a newer Node.
 - `.prettierignore` excludes `/tasks/`, `/agents/`, and `/docs/demos/` (PRDs, agent process files, and showboat demo logs) from the app's lint/format scope.
 - When writing showboat `exec` blocks meant to be reproducible via `showboat verify`, strip timestamps/durations/PIDs from captured command output (grep/sed) before showboat records it.
+- Real secrets (Turso URL/token, etc.) live only in the gitignored root `.env`; `.env.example` tracks variable names with empty values. Never let `showboat exec` capture raw `.env` contents or a connection string into a committed demo doc — pipe drizzle-kit/db output through `grep -v`/`sed` to redact if needed, and grep the demo file for secret-shaped strings before committing.
+- Drizzle/Turso: `db` client lives at `src/lib/server/db/index.ts` (server-only import), schema at `src/lib/server/db/schema.ts`, config at root `drizzle.config.ts` (`dialect: 'turso'`). `npm run db:push` applies schema directly (no migration files generated); use `npm run db:generate` if versioned SQL migrations are ever needed.
 
 ## Progress Log
 
@@ -17,4 +19,19 @@
   - No svelte.config.js exists in this project — adapter and Svelte compiler options are configured inside vite.config.ts via the sveltekit() plugin call. Don't go looking for svelte.config.js.
   - If a build fails locally with "Unsupported Node.js version", it's the adapter-vercel runtime check, not an app bug — the explicit runtime override is already in place in vite.config.ts.
   - Tailwind v4 has no tailwind.config.js by default; it's wired purely through `@tailwindcss/vite` in vite.config.ts plus `@import 'tailwindcss';` in src/routes/layout.css, imported from +layout.svelte.
+---
+
+## [2026-07-22] - US-A01
+- Installed `drizzle-orm`, `@libsql/client` (dependencies) and `drizzle-kit` (devDependency).
+- Added `src/lib/server/db/schema.ts`: intentionally empty baseline schema module (just `export {}` plus comments pointing to tasks/prd-data-model.md and US-D01, which will define the real tables). Kept deliberately empty per this story's scope — full schema is a separate story.
+- Added `src/lib/server/db/index.ts`: exports `db`, a `drizzle-orm/libsql` client built from `createClient({ url, authToken })`, reading `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` via `$env/dynamic/private` and throwing early if the URL is missing.
+- Added root `drizzle.config.ts` (`dialect: 'turso'`, `schema: './src/lib/server/db/schema.ts'`, `out: './drizzle'`), reading the same two env vars from `process.env` (drizzle-kit's bundled dotenv auto-loads the repo's `.env`).
+- Added `npm run db:push` / `db:generate` / `db:studio` scripts wrapping `drizzle-kit push|generate|studio`.
+- Added `.env.example` documenting `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` with empty values (real values only in the gitignored `.env`, already provisioned by the project owner before this story started).
+- Verified: `npm run db:push -- --force` ran against the real Turso database already configured in `.env` and reported "No changes detected" (correct for an empty baseline schema against a fresh DB). `npm run check` (0 errors), `npm run lint` (prettier + eslint clean), `npm run build` (adapter-vercel build still succeeds). Full proof recorded in docs/demos/US-A01.md (showboat verify passes, exit 0); no rodney/browser step since this story has no UI surface.
+- Files changed: package.json, package-lock.json, drizzle.config.ts (new), .env.example (new), src/lib/server/db/index.ts (new), src/lib/server/db/schema.ts (new), CLAUDE.md, docs/demos/US-A01.md (new), agents/prd.json, agents/progress.txt.
+- **Learnings for future iterations:**
+  - `schema.ts` must export *something* (even just `export {}`) or TS/svelte-check errors with "is not a module" when other files do `import * as schema from './schema'` — relevant again once US-D01 replaces the placeholder with real tables (the export shape will change naturally once tables exist).
+  - drizzle-kit 0.31.x bundles its own dotenv loading, so `drizzle.config.ts` can read `process.env.TURSO_*` directly without an explicit `import 'dotenv/config'` — no extra dependency needed.
+  - `npm run db:push` needs `-- --force` (i.e. `npm run db:push -- --force`) to skip the interactive confirmation prompt in a non-interactive shell; safe here since the baseline schema has no destructive changes to confirm.
 ---
