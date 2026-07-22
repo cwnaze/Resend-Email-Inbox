@@ -17,8 +17,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 1,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Scaffolded via `sv create` (prettier, eslint, tailwindcss, sveltekit-adapter=vercel add-ons). No svelte.config.js in this SvelteKit version — adapter/compiler options live in vite.config.ts instead. adapter-vercel given explicit runtime: 'nodejs22.x' since local Node (v26) is unsupported by its auto-detection. See docs/demos/US-A00.md for verification proof."
     },
     {
       "id": "US-A01",
