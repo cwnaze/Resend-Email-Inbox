@@ -1,0 +1,531 @@
+{
+  "project": "Custom Email Inbox",
+  "branchName": "ralph/custom-email-inbox",
+  "description": "Single-user Svelte 5 + SvelteKit email inbox using Resend for inbound/outbound mail, Turso (libSQL/Drizzle) for persistence, Cloudflare R2 for attachments, one-button 6-digit-code auth, and a 'Dusk Terminal' dark-first design system, deployed to Vercel.",
+  "userStories": [
+    {
+      "id": "US-A00",
+      "title": "Scaffold SvelteKit project with Tailwind CSS and Vercel adapter",
+      "description": "As a developer, I need a working SvelteKit project with Tailwind CSS and the Vercel adapter installed, so every later story has a real app to build inside.",
+      "acceptanceCriteria": [
+        "SvelteKit project created with TypeScript, using Svelte 5 (runes enabled)",
+        "Tailwind CSS installed and configured (postcss/tailwind config present, imported in the root layout)",
+        "@sveltejs/adapter-vercel installed and set as the adapter in svelte.config.js",
+        "npm run dev starts successfully and renders a default placeholder page",
+        "npm run build completes successfully with the Vercel adapter",
+        "Typecheck/lint passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-A01",
+      "title": "Provision Turso database and Drizzle schema scaffold",
+      "description": "As a developer, I need the database provisioned and connected so all later features have persistence to build on.",
+      "acceptanceCriteria": [
+        "Turso database created and TURSO_DATABASE_URL/TURSO_AUTH_TOKEN available locally via .env and in Vercel project settings",
+        "Drizzle ORM installed and configured with drizzle-orm/libsql and a drizzle.config.ts pointing at the Turso instance",
+        "npm run db:push (or equivalent) successfully applies an empty baseline schema",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-A02",
+      "title": "Provision Cloudflare R2 for attachment storage",
+      "description": "As a developer, I need object storage wired up so attachments have somewhere to live outside the database.",
+      "acceptanceCriteria": [
+        "Cloudflare R2 bucket created; R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_URL_BASE available locally and in Vercel project settings",
+        "A small utility function exists that uploads a Buffer/Blob to R2 (via the S3-compatible API) and returns its object key/public URL",
+        "A small utility function exists that deletes an R2 object by key",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-A03",
+      "title": "Scaffold protected route group and session-check layout",
+      "description": "As a developer, I need the (app) route group to redirect unauthenticated visitors to /login, so every mailbox feature is protected from day one.",
+      "acceptanceCriteria": [
+        "src/routes/(app)/+layout.server.ts checks for a valid session cookie and redirects to /login if absent/invalid",
+        "src/routes/login/+page.svelte renders a placeholder page (full auth UI built in a later story)",
+        "Visiting /inbox while unauthenticated redirects to /login",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-D01",
+      "title": "Define and migrate core schema",
+      "description": "As a developer, I need the full set of tables (contacts, threads, emails, attachments, auth_codes, sessions) defined in Drizzle so every feature has a schema to build against.",
+      "acceptanceCriteria": [
+        "Drizzle schema file(s) define contacts, threads, emails, attachments, auth_codes, sessions exactly per the Data Model PRD",
+        "All specified indexes are created (emails.thread_id, emails.message_id unique, emails.is_read+is_deleted, threads.last_message_at, contacts.email unique, attachments.email_id, sessions.token_hash unique, auth_codes.expires_at)",
+        "Foreign keys (emails.thread_id, attachments.email_id) are enforced",
+        "Migration applies cleanly against a fresh Turso database",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-J01",
+      "title": "Design tokens and Tailwind theme configuration",
+      "description": "As a developer, I need the Dusk Terminal palette, type scale, radii, and motion tokens available as reusable Tailwind config, so every screen stays visually consistent without redefining values.",
+      "acceptanceCriteria": [
+        "Tailwind config (or CSS custom properties) defines all Dusk Terminal palette tokens for both dark and light themes",
+        "Font families for humanist sans (Inter) and monospace (JetBrains Mono/IBM Plex Mono) are loaded and available as Tailwind font utilities",
+        "Border radius scale limited to 2-4px options is available as a Tailwind utility/preset",
+        "A theme toggle (or prefers-color-scheme default) switches all tokens correctly",
+        "Typecheck/lint passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-J02",
+      "title": "App shell layout (desktop two-pane, responsive collapse)",
+      "description": "As the app owner, I want a consistent shell around every screen that adapts from desktop to mobile, so the app feels coherent and usable on any device.",
+      "acceptanceCriteria": [
+        "Desktop (>=1024px) renders a two-pane list/detail layout (fixed-width left list column, remaining right pane for detail/compose)",
+        "Viewport widths down to 375px show no horizontal scrolling and a usable single-pane stack",
+        "Top bar includes app mark, search entry point, and logout action",
+        "Typecheck/lint passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-J03",
+      "title": "Shared empty/loading/error state components",
+      "description": "As a developer, I want reusable empty/loading/error components, so every feature looks and behaves consistently for absent/loading/failed data.",
+      "acceptanceCriteria": [
+        "A shared EmptyState component accepts a message + optional sub-copy",
+        "A shared Skeleton component renders pulsing placeholder rows for list-shaped content",
+        "A shared inline ErrorMessage component renders in the danger color with optional retry callback",
+        "Typecheck/lint passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-B01",
+      "title": "Auth codes and sessions schema wiring",
+      "description": "As a developer, I need tables for auth codes and sessions (already defined in US-D01) verified and used, so the login flow has somewhere to persist state.",
+      "acceptanceCriteria": [
+        "auth_codes table usage verified (code hash, created_at, expires_at, used_at, attempt_count)",
+        "sessions table usage verified (token hash, created_at, expires_at)",
+        "Drizzle queries for both tables compile and run against the migrated schema",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-B02",
+      "title": "'Send me a code' endpoint with rate limiting",
+      "description": "As the app owner, I want clicking the login button to email me a 6-digit code, so I can authenticate without a password.",
+      "acceptanceCriteria": [
+        "POST /api/auth/request-code generates a cryptographically random 6-digit code",
+        "The code is hashed (e.g., SHA-256) before storage; the raw code is never persisted",
+        "A row is inserted into auth_codes with expires_at = now + 10 minutes",
+        "The email is sent via Resend from auth@caseynazelrod.com to the constant AUTH_RECIPIENT_EMAIL (cwnaze@gmail.com) - this address is never read from request input",
+        "Rate limiting: no more than 3 code requests per 10-minute rolling window; the 4th+ request in that window returns 429 without sending an email or creating a new code row",
+        "Any previously unused, unexpired code is invalidated when a new one is requested (only one active code at a time)",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-B03",
+      "title": "Verify-code endpoint and session creation",
+      "description": "As the app owner, I want to enter the 6-digit code and be logged in, so I can access my inbox.",
+      "acceptanceCriteria": [
+        "POST /api/auth/verify-code accepts a 6-digit code, hashes it, and compares against the active unexpired, unused auth_codes row",
+        "On match: marks the code row used_at = now(), creates a sessions row, and sets an httpOnly, Secure, SameSite=Lax session cookie containing only an opaque session token",
+        "On mismatch: increments attempt_count; after 5 failed attempts against a given code, that code is invalidated and the user must request a new one",
+        "Expired codes are rejected with a clear error and do not increment attempt count against a dead code",
+        "A code cannot be used twice",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-B04",
+      "title": "Login page UI - single button and code entry",
+      "description": "As the app owner, I want a minimal login screen: one button, then a code field, so login is fast and matches the Dusk Terminal aesthetic.",
+      "acceptanceCriteria": [
+        "/login renders centered app mark + single 'Send me a code' button (no email input field anywhere on the page)",
+        "Clicking the button calls the request-code endpoint and transitions the UI to a 6-digit code entry step (monospace input)",
+        "Submitting an incorrect code shows an inline error without navigating away",
+        "Submitting a valid code redirects to /inbox",
+        "Rate-limit (429) responses show a clear 'try again in N minutes' message",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-B05",
+      "title": "Route protection and logout",
+      "description": "As the app owner, I want all mailbox routes to require a valid session, and a way to log out, so my inbox stays private.",
+      "acceptanceCriteria": [
+        "(app) layout server load rejects requests with missing/expired/invalid session cookie and redirects to /login",
+        "POST /api/auth/logout clears the session cookie and deletes the corresponding sessions row",
+        "A visible logout action exists in the app shell",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-E01",
+      "title": "Verify Resend inbound webhook signature",
+      "description": "As a developer, I need every inbound webhook request cryptographically verified, so unauthenticated payloads can never be ingested.",
+      "acceptanceCriteria": [
+        "POST /api/webhooks/resend-inbound reads svix-id, svix-timestamp, svix-signature headers",
+        "Uses the svix library and RESEND_INBOUND_WEBHOOK_SECRET to verify the raw request body",
+        "Requests failing verification return 401 and are not parsed further or persisted",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-E02",
+      "title": "Parse inbound payload and upsert contact",
+      "description": "As the app owner, I want every inbound sender automatically added to my contacts, so I don't have to add people manually.",
+      "acceptanceCriteria": [
+        "Verified payload is parsed into from/to/cc/subject/body/date/Message-ID/In-Reply-To fields",
+        "A contacts row is upserted by email (case-insensitive); if new, name is set from the payload's display name and auto_created = true",
+        "If a contact already exists and was manually edited (auto_created = false), its name is not overwritten",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-E03",
+      "title": "Sanitize HTML body and store email",
+      "description": "As the app owner, I want inbound HTML sanitized before it's stored, so no malicious markup ever reaches my browser.",
+      "acceptanceCriteria": [
+        "body_html is run through isomorphic-dompurify stripping scripts, event handlers, and disallowed remote-loading tags before being persisted",
+        "body_text (plain-text alternative) is stored as-is if present in the payload",
+        "Duplicate deliveries (same message_id already in emails) are detected and skipped (idempotent ingestion) rather than erroring",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-E04",
+      "title": "Thread assignment",
+      "description": "As the app owner, I want replies grouped with their original conversation, so I see a coherent thread instead of scattered messages.",
+      "acceptanceCriteria": [
+        "If the payload's In-Reply-To matches an existing emails.message_id, the new email is attached to that email's thread_id",
+        "If no match is found, a new threads row is created with the (normalized) subject",
+        "threads.last_message_at and threads.is_read are updated per the Data Model PRD rules",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-E05",
+      "title": "Attachment extraction and R2 upload",
+      "description": "As the app owner, I want inbound attachments saved and accessible from the thread view, so I don't lose files sent to me.",
+      "acceptanceCriteria": [
+        "Each attachment in the payload (base64-encoded) is decoded and uploaded to R2 under a key namespaced by email ID",
+        "An attachments row is created per file with filename, content-type, size, R2 key, and public URL",
+        "Ingestion completes successfully even if one attachment upload fails, logging the failure without discarding the rest of the email",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-F01",
+      "title": "Load and render thread list",
+      "description": "As the app owner, I want to see all my threads sorted by most recent activity, so the newest conversations are always on top.",
+      "acceptanceCriteria": [
+        "/inbox server load queries threads ordered by last_message_at descending, joined to each thread's latest email for preview (from, subject, snippet, timestamp)",
+        "Each row shows sender name/email, subject, a short body snippet, and relative timestamp (e.g., '2h ago')",
+        "Soft-deleted-only threads (all member emails deleted) are excluded from the list",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-F02",
+      "title": "Unread visual treatment",
+      "description": "As the app owner, I want unread threads to visually stand out, so I know what I haven't looked at yet.",
+      "acceptanceCriteria": [
+        "Unread threads show a sage accent dot (#7FB4A6) and slightly brighter primary-text weight",
+        "Read threads render in the muted text tone",
+        "Opening a thread marks all its emails is_read = true and recomputes threads.is_read",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-F03",
+      "title": "Read/unread filter",
+      "description": "As the app owner, I want to filter the list to only unread threads, so I can focus on what's new.",
+      "acceptanceCriteria": [
+        "Filter control offers All / Unread / Read",
+        "Filter state is reflected in the URL query params (e.g., ?filter=unread) so it survives refresh/back navigation",
+        "Selecting 'Unread' hides threads where threads.is_read = true",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-F04",
+      "title": "Subject/sender search",
+      "description": "As the app owner, I want to search my inbox by subject or sender, so I can quickly find a specific conversation.",
+      "acceptanceCriteria": [
+        "A search input filters the visible thread list by case-insensitive substring match against thread subject or any member email's from_name/from_email",
+        "Search query is reflected in the URL query params (e.g., ?q=invoice)",
+        "Empty result state shows a clear 'No matching threads' message",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-G01",
+      "title": "Load and render a full thread",
+      "description": "As the app owner, I want to open a thread and see every message in it in order, so I have full context on the conversation.",
+      "acceptanceCriteria": [
+        "/inbox/[threadId] server load fetches the thread and all non-deleted member emails ordered by received_at ascending",
+        "Each message shows sender, recipients (to/cc), timestamp, and body",
+        "A 404/empty state is shown if the thread ID doesn't exist or has no visible messages",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-G02",
+      "title": "Sanitized HTML rendering with image opt-in",
+      "description": "As the app owner, I want HTML emails to render safely and without loading remote trackers automatically, so I stay protected from malicious or tracking content.",
+      "acceptanceCriteria": [
+        "body_html renders inside a sandboxed <iframe srcdoc> (sandbox=\"allow-same-origin\", no allow-scripts) sized to content height",
+        "Remote <img> tags are blocked by default (e.g., stripped src replaced with a placeholder) with a per-message 'Load images' button that reveals them on click",
+        "Messages with only body_text render as preformatted, wrapped plain text with no iframe needed",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 24,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-G03",
+      "title": "Attachment list and download",
+      "description": "As the app owner, I want to see and download attachments on a message, so I can access files people send me.",
+      "acceptanceCriteria": [
+        "Each message with attachments shows a list of filename + size below the body",
+        "Clicking an attachment opens/downloads it from its R2 public URL",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 25,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-G04",
+      "title": "Mark read on view, soft-delete a message",
+      "description": "As the app owner, I want opening a thread to mark it read, and I want to delete a message I don't need, so my inbox stays current.",
+      "acceptanceCriteria": [
+        "Loading the thread page marks all its emails is_read = true if not already, and recomputes threads.is_read",
+        "A delete action on an individual message sets is_deleted = true (soft delete); the message disappears from the thread view but is not destroyed",
+        "Deleting the last visible message in a thread returns the user to /inbox",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 26,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-H01",
+      "title": "Compose new email UI",
+      "description": "As the app owner, I want a compose screen to write a brand-new email, so I can start conversations, not just reply to inbound ones.",
+      "acceptanceCriteria": [
+        "/compose renders To, Cc (optional, collapsible), Subject, and body fields",
+        "To field supports typing an address directly or selecting from existing contacts (autocomplete)",
+        "Body field supports plain text at minimum; a lightweight rich-text editor is acceptable if plain text always works",
+        "Client-side validation requires at least one To address and a non-empty subject or body before allowing send",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 27,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-H02",
+      "title": "Send outbound email via Resend",
+      "description": "As the app owner, I want clicking Send to actually deliver my email, so composing is functional, not just a form.",
+      "acceptanceCriteria": [
+        "Form action calls the Resend send API with from/to/cc/subject/body",
+        "On success, a new emails row is inserted with direction = 'outbound', is_read = true, and either a new threads row (new message) or the existing thread's ID (reply/forward)",
+        "On Resend API failure, the user sees an inline error and the compose form retains their input (no data loss)",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 28,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-H03",
+      "title": "Reply pre-fills context and threading headers",
+      "description": "As the app owner, I want 'Reply' to pre-fill the recipient and subject and stay correctly threaded, so replying is fast and the conversation doesn't fork.",
+      "acceptanceCriteria": [
+        "Navigating from a message's 'Reply' action opens /compose pre-filled with To = original sender, Subject = 'Re: ' + original subject (not double-prefixed if already present)",
+        "The sent email's In-Reply-To and threading is set so it lands in the same thread_id as the original message",
+        "Quoted original message content is included below the compose body, visually separated",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 29,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-H04",
+      "title": "Forward pre-fills subject and body, clears recipient",
+      "description": "As the app owner, I want 'Forward' to carry over the original content but let me pick a new recipient, so I can share a message with someone else.",
+      "acceptanceCriteria": [
+        "Navigating from a message's 'Forward' action opens /compose with an empty To field, Subject = 'Fwd: ' + original subject (not double-prefixed if already present), and the original body quoted",
+        "Forwarding creates a new thread (since the recipient is new), not appended to the original thread",
+        "Original attachments are carried over as attachments on the forwarded send (re-associated in R2/attachments, not re-uploaded by the user)",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 30,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-H05",
+      "title": "Attach files when composing",
+      "description": "As the app owner, I want to attach files to an email I'm writing, so I can send documents/images to people.",
+      "acceptanceCriteria": [
+        "Compose UI has a file picker/drag-drop area supporting multiple files",
+        "Selected files are uploaded to R2 before/at send time and passed to the Resend send API as attachments",
+        "Attached files list shows filename/size with a remove option before sending",
+        "A sensible size limit (e.g., total attachments under ~25MB) is enforced client- and server-side with a clear error if exceeded",
+        "On successful send, attachments rows are created against the new emails row",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 31,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-I01",
+      "title": "Contacts list view",
+      "description": "As the app owner, I want to see everyone I've emailed or received email from, so I have a quick reference of my correspondents.",
+      "acceptanceCriteria": [
+        "/contacts lists all contacts rows sorted alphabetically by display name (falling back to email if no name)",
+        "Each row shows name, email, and (if available) a count or 'last contacted' timestamp derived from emails",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 32,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-I02",
+      "title": "Edit a contact",
+      "description": "As the app owner, I want to fix a contact's display name, so my contacts list stays clean even when senders use inconsistent 'From' names.",
+      "acceptanceCriteria": [
+        "Each contact row has an edit action opening an inline or modal form with a name field",
+        "Saving updates the contacts row and sets auto_created = false so future inbound emails from that address don't overwrite the name",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 33,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-I03",
+      "title": "Manually add a contact",
+      "description": "As the app owner, I want to add a contact by hand even before they've emailed me, so I can address a new email to them from Compose.",
+      "acceptanceCriteria": [
+        "/contacts has an 'Add contact' action with name + email fields",
+        "Duplicate email (case-insensitive) is rejected with an inline error pointing to the existing contact",
+        "New manual contacts are created with auto_created = false",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 34,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-I04",
+      "title": "Contact autocomplete in Compose",
+      "description": "As the app owner, I want typing in the To/Cc field of Compose to suggest existing contacts, so I don't have to remember or retype addresses.",
+      "acceptanceCriteria": [
+        "Typing in Compose's To/Cc field queries contacts by name/email substring match and shows matching suggestions",
+        "Selecting a suggestion fills the field with that contact's email",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 35,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
