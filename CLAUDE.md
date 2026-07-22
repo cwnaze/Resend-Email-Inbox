@@ -18,6 +18,8 @@
 - `src/lib/server/db/schema.ts` is the single Drizzle schema file; `drizzle.config.ts` (repo root, `dialect: 'turso'`) points at it and at `./drizzle` for generated migrations.
 - Real Turso credentials live only in the gitignored root `.env` (never commit them); `.env.example` documents the variable names with empty values.
 - `npm run db:push` applies the schema directly to the configured Turso database (no migration files); `npm run db:generate` emits SQL migration files under `./drizzle` if a versioned-migration workflow is needed later; `npm run db:studio` opens Drizzle Studio.
+- Both `drizzle.config.ts` and `src/lib/server/db/index.ts` throw at startup if either `TURSO_DATABASE_URL` or `TURSO_AUTH_TOKEN` is missing — a remote Turso connection needs both, so failing fast on either avoids a confusing runtime error from `@libsql/client` later.
+- If a future story switches to `npm run db:generate` (versioned migrations instead of `db:push`), commit the generated `./drizzle/*.sql` files and the `./drizzle/meta` journal — they're a source-of-truth migration history, not disposable build output, so `./drizzle` should NOT be gitignored once it's in use.
 
 ## Workflow
 
