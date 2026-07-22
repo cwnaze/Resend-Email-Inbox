@@ -38,10 +38,10 @@ Run npm run preview to preview your production build locally.
   ✔ done
 ```
 
-Verification against the real R2 bucket uses the committed `scripts/verify-r2.mts` helper (run outside SvelteKit via tsx, since `$env/dynamic/private` only resolves inside Vite/SvelteKit): it uploads a small text object via the same S3-compatible calls as `uploadToR2`, generates a presigned GET URL via the same call as `getR2SignedDownloadUrl`, fetches through that URL, deletes the object via the same call as `deleteFromR2`, then confirms a fresh presigned URL for the now-deleted key 404s. No secrets appear in the captured output (only booleans/status codes).
+Verification against the real R2 bucket uses the committed `src/lib/server/r2/verify.mts` helper (run outside SvelteKit via tsx, since `$env/dynamic/private` only resolves inside Vite/SvelteKit): it uploads a small text object via the same S3-compatible calls as `uploadToR2`, generates a presigned GET URL via the same call as `getR2SignedDownloadUrl`, fetches through that URL, deletes the object via the same call as `deleteFromR2`, then confirms a fresh presigned URL for the now-deleted key 404s. No secrets appear in the captured output (only booleans/status codes).
 
 ```bash
-node --env-file=.env node_modules/.bin/tsx scripts/verify-r2.mts 2>&1
+node --env-file=.env node_modules/.bin/tsx src/lib/server/r2/verify.mts 2>&1
 ```
 
 ```output
