@@ -60,8 +60,7 @@ Defines the Turso (libSQL) schema, via Drizzle ORM, for every persisted entity: 
 | `filename` | text, not null | |
 | `content_type` | text, not null | |
 | `size_bytes` | integer, not null | |
-| `r2_object_key` | text, not null | key within the R2 bucket |
-| `r2_public_url` | text, not null | |
+| `r2_object_key` | text, not null | key within the R2 bucket; the bucket is private, so download URLs are presigned on demand rather than stored (no `r2_public_url` column) |
 | `created_at` | integer (unix ms), not null | |
 
 ### `auth_codes`

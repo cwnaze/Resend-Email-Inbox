@@ -37,7 +37,7 @@ The reading view for a single conversation: all messages in a thread, rendered c
 
 **Acceptance Criteria:**
 - [ ] Each message with attachments shows a list of filename + size below the body
-- [ ] Clicking an attachment opens/downloads it from its R2 public URL
+- [ ] Clicking an attachment opens/downloads it via a presigned R2 URL generated on demand (bucket is private, no static public URL)
 - [ ] Typecheck passes
 - [ ] Verify in browser using dev-browser skill
 

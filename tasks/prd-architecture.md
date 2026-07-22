@@ -92,8 +92,7 @@ src/routes/
 | `R2_ACCOUNT_ID` | Cloudflare account ID for R2 |
 | `R2_ACCESS_KEY_ID` | R2 S3-compatible API access key |
 | `R2_SECRET_ACCESS_KEY` | R2 S3-compatible API secret key |
-| `R2_BUCKET_NAME` | R2 bucket used for attachment storage |
-| `R2_PUBLIC_URL_BASE` | Public/CDN base URL for serving attachment objects |
+| `R2_BUCKET_NAME` | R2 bucket used for attachment storage (private; no public URL base — download links are presigned on demand) |
 | `AUTH_RECIPIENT_EMAIL` | Hardcoded constant: `cwnaze@gmail.com` — the only address login codes are ever sent to |
 | `AUTH_SENDER_EMAIL` | `auth@caseynazelrod.com` — the Resend-verified sending address for auth codes |
 | `SESSION_SECRET` | Signing key for session cookie (e.g., used with a signed-cookie or JWT library) |
@@ -125,8 +124,9 @@ src/routes/
 **Description:** As a developer, I need object storage wired up so attachments have somewhere to live outside the database.
 
 **Acceptance Criteria:**
-- [ ] Cloudflare R2 bucket created; `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_URL_BASE` available locally and in Vercel project settings
-- [ ] A small utility function exists that uploads a `Buffer`/`Blob` to R2 (via the S3-compatible API) and returns its object key/public URL
+- [ ] Cloudflare R2 bucket created (private, no public access/custom domain); `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` available locally and in Vercel project settings
+- [ ] A small utility function exists that uploads a `Buffer`/`Blob` to R2 (via the S3-compatible API) and returns its object key
+- [ ] A small utility function exists that generates a time-limited presigned GET URL for a given object key
 - [ ] A small utility function exists that deletes an R2 object by key
 - [ ] Typecheck/lint passes
 
