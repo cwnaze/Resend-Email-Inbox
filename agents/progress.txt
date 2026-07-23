@@ -53,3 +53,16 @@
   - `$env/dynamic/private` (and any `$env/*` import) only resolves inside SvelteKit/Vite. Standalone infra scripts run via plain `tsx`/`node` must read `process.env` directly and be invoked with `node --env-file=.env ...` (or similar) instead of importing app modules that pull in `$env/*`.
   - No Vercel project is linked in this dev environment — treat "available... in Vercel project settings" acceptance criteria as a manual step for the project owner to complete separately, not something verifiable here.
 ---
+
+## [2026-07-23] - US-A03
+- Added `src/lib/server/auth/session.ts`: exports `SESSION_COOKIE_NAME` (`'session'`) and `hasSessionCookie(cookies)`, a presence/non-empty check only — no DB validation yet since the `sessions` table doesn't exist until US-B01.
+- Added `src/routes/(app)/+layout.server.ts`: calls `hasSessionCookie`, redirects (302) to `/login` if absent. Added `src/routes/(app)/+layout.svelte` (pass-through `{@render children()}`).
+- Added `src/routes/(app)/inbox/+page.svelte` (placeholder "Inbox" page, exists purely so `/inbox` has a protected route to verify redirect behavior against) and `src/routes/login/+page.svelte` (placeholder "Login" page).
+- Added `.rodney` to `.gitignore` — `rodney --local start` creates local browser-automation state under `.rodney/` that isn't gitignored anywhere yet in this project; without the ignore entry it shows up as untracked files and trips `prettier --check .` in `npm run lint`.
+- Verified: `npm run check` (0 errors), `npm run lint` (clean), `npm run build` (adapter-vercel build succeeds). Ran `npm run dev` and confirmed via `curl`: unauthenticated `GET /inbox` → `302` to `/login`; same request with a `session=<any-non-empty-value>` cookie → `200`. Confirmed via rodney (`rodney --local open http://localhost:5173/inbox` → final `url`/`title` both `/login`), screenshot captured. Full proof recorded in docs/demos/US-A03.md (showboat verify passes, exit 0).
+- Files changed: src/lib/server/auth/session.ts (new), src/routes/(app)/+layout.server.ts (new), src/routes/(app)/+layout.svelte (new), src/routes/(app)/inbox/+page.svelte (new), src/routes/login/+page.svelte (new), .gitignore, CLAUDE.md, docs/demos/US-A03.md (new), agents/prd.json, agents/progress.txt.
+- **Learnings for future iterations:**
+  - Route protection for all mailbox pages is centralized in `src/routes/(app)/+layout.server.ts` — new protected pages just need to live under `(app)/`, no per-route auth code needed.
+  - The session check is presence-only for now (no `sessions` table until US-B01). When implementing US-B01/US-B05, replace the check inside `(app)/+layout.server.ts` with a real hash-and-lookup against `sessions`, rather than adding a second parallel check elsewhere.
+  - `rodney --local start` writes local state to `.rodney/` (Chrome profile data, etc.) — this needs a `.gitignore` entry (now added) or it silently fails `npm run lint`'s `prettier --check .` step on unrelated stories that happen to run rodney first.
+---
