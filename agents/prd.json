@@ -18,7 +18,7 @@
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Scaffolded via `sv create` (prettier, eslint, tailwindcss, sveltekit-adapter=vercel add-ons). No svelte.config.js in this SvelteKit version — adapter/compiler options live in vite.config.ts instead. adapter-vercel given explicit runtime: 'nodejs22.x' since local Node (v26) is unsupported by its auto-detection. See docs/demos/US-A00.md for verification proof."
+      "notes": "Scaffolded via `sv create` (prettier, eslint, tailwindcss, sveltekit-adapter=vercel add-ons). No svelte.config.js in this SvelteKit version \u2014 adapter/compiler options live in vite.config.ts instead. adapter-vercel given explicit runtime: 'nodejs22.x' since local Node (v26) is unsupported by its auto-detection. See docs/demos/US-A00.md for verification proof."
     },
     {
       "id": "US-A01",
@@ -47,7 +47,7 @@
       ],
       "priority": 3,
       "passes": true,
-      "notes": "Bucket is private (owner is not using a public bucket URL / custom domain), so there is no R2_PUBLIC_URL_BASE env var — access is via presigned URLs generated on demand instead of a static public URL. This affects attachments.r2_public_url in prd-data-model.md and the 'public URL' wording in US-E05/US-G03 acceptance criteria; those should be read as 'presigned URL generated at request time' rather than a stored permanent public URL. src/lib/server/r2/index.ts provides uploadToR2/deleteFromR2/getR2SignedDownloadUrl, verified end-to-end (upload, presigned fetch, delete, post-delete 404) against the real R2 bucket via scripts/verify-r2.mts. R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET_NAME are set locally in .env; no vercel CLI/project link is available in this environment, so adding the same vars to the Vercel project's env settings is still an outstanding manual step for the project owner before deploying."
+      "notes": "Bucket is private (owner is not using a public bucket URL / custom domain), so there is no R2_PUBLIC_URL_BASE env var \u2014 access is via presigned URLs generated on demand instead of a static public URL. This affects attachments.r2_public_url in prd-data-model.md and the 'public URL' wording in US-E05/US-G03 acceptance criteria; those should be read as 'presigned URL generated at request time' rather than a stored permanent public URL. src/lib/server/r2/index.ts provides uploadToR2/deleteFromR2/getR2SignedDownloadUrl, verified end-to-end (upload, presigned fetch, delete, post-delete 404) against the real R2 bucket via scripts/verify-r2.mts. R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET_NAME are set locally in .env; no vercel CLI/project link is available in this environment, so adding the same vars to the Vercel project's env settings is still an outstanding manual step for the project owner before deploying."
     },
     {
       "id": "US-A03",
@@ -92,8 +92,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Tokens implemented as Tailwind v4 CSS-first @theme config in src/routes/layout.css (no tailwind.config.js): dark/light palette as data-theme-toggleable CSS custom properties, Inter/JetBrains Mono self-hosted via @fontsource, radius namespace overridden to 2-4px, motion tokens (120-160ms + standard ease). Theme toggle logic in src/lib/theme.svelte.ts + src/lib/components/ThemeToggle.svelte, verification page at /dev/tokens. See docs/demos/US-J01.md."
     },
     {
       "id": "US-J02",
