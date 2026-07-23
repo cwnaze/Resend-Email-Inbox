@@ -54,7 +54,7 @@ Handles Resend's inbound webhook: verifying the request, parsing the payload, sa
 
 **Acceptance Criteria:**
 - [ ] Each attachment in the payload (base64-encoded) is decoded and uploaded to R2 under a key namespaced by email ID
-- [ ] An `attachments` row is created per file with filename, content-type, size, R2 key, and public URL
+- [ ] An `attachments` row is created per file with filename, content-type, size, and R2 key (bucket is private; download URLs are presigned on demand rather than stored)
 - [ ] Ingestion completes successfully even if one attachment upload fails, logging the failure without discarding the rest of the email (attachment marked with a retry-later state is out of scope for v1 — failed attachments are simply omitted and logged)
 - [ ] Typecheck passes
 

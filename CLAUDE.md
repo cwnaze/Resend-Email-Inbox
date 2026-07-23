@@ -21,6 +21,13 @@
 - Both `drizzle.config.ts` and `src/lib/server/db/index.ts` throw at startup if either `TURSO_DATABASE_URL` or `TURSO_AUTH_TOKEN` is missing — a remote Turso connection needs both, so failing fast on either avoids a confusing runtime error from `@libsql/client` later.
 - If a future story switches to `npm run db:generate` (versioned migrations instead of `db:push`), commit the generated `./drizzle/*.sql` files and the `./drizzle/meta` journal — they're a source-of-truth migration history, not disposable build output, so `./drizzle` should NOT be gitignored once it's in use.
 
+## Object storage (Cloudflare R2)
+
+- `src/lib/server/r2/index.ts` exports three server-only utilities: `uploadToR2(key, body, contentType?)`, `deleteFromR2(key)`, and `getR2SignedDownloadUrl(key, expiresInSeconds?)` (default 15 min). Built on `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` against R2's S3-compatible API at `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`.
+- The bucket is **private** — there is no `R2_PUBLIC_URL_BASE`/static public URL. Any place the app needs to let the browser fetch/download an object must call `getR2SignedDownloadUrl` on demand rather than storing a permanent URL. This affects the `attachments` table (stores `r2_object_key`, not a public URL) and any UI that lists/downloads attachments.
+- Required env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` (read via `$env/dynamic/private`, same pattern as the Turso vars). The module throws at import time if any are missing.
+- Only import `src/lib/server/r2` from server-only code (`+page.server.ts`, `+server.ts`, `src/lib/server/**`) — same rule as the `db` client.
+
 ## Workflow
 
 - This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR, human merges.
