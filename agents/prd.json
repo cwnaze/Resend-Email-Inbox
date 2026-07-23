@@ -107,8 +107,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "App shell added at src/routes/(app)/+layout.svelte: top bar (app mark linking to /inbox, search input placeholder, POST /logout form) plus a two-pane layout using Tailwind's lg (1024px) breakpoint \u2014 fixed 360px left 'list' column (placeholder text; real thread list lands in US-F01) and a flexible right pane rendering {@render children()}. Below lg, the left column is hidden (display:none via 'hidden lg:flex') giving a single-pane stack with no horizontal overflow down to 375px. Added src/routes/logout/+server.ts (POST) which clears the session cookie and redirects to /login \u2014 real session-row invalidation lands in US-B05 once the sessions table is read from. See docs/demos/US-J02.md for verification proof (rodney screenshots at 1280px and 375px, curl-based route-protection checks, logout redirect confirmed)."
     },
     {
       "id": "US-J03",

@@ -46,6 +46,12 @@
 - Theme toggle logic (not just CSS) lives in `src/lib/theme.svelte.ts`: `themeState` (a `$state` rune) tracks the explicit user choice (`'dark' | 'light' | null`, `null` = follow OS), `applyTheme`/`toggleTheme` set/clear the `data-theme` attribute on `<html>` and persist to `localStorage` (`dusk-terminal-theme` key). Call `initTheme()` once from the root `+layout.svelte` to sync `themeState` with `localStorage` on mount. `src/app.html` has a small inline (pre-hydration) script that reads the same `localStorage` key and sets `data-theme` before first paint, to avoid a flash of the wrong theme — keep that script and the `theme.svelte.ts` logic using the exact same storage key and value shape if either changes.
 - `src/lib/components/ThemeToggle.svelte` is the reusable toggle button; `src/routes/dev/tokens/+page.svelte` is a dev-only page (unauthenticated, outside the `(app)` route group) that renders every token as a swatch/sample for visual QA — not part of the real app shell (that's US-J02), just a verification aid. Reuse this page rather than building a new one when adding future tokens.
 
+## App shell
+
+- `src/routes/(app)/+layout.svelte` is the real app shell (US-J02): a top bar (app mark, search input, `POST /logout` form) plus a two-pane body — a fixed `w-[360px]` left column (`hidden lg:flex`, Tailwind's `lg` = 1024px matches the design's desktop breakpoint) and a flexible right pane rendering `{@render children()}`. Below `lg` the left column is hidden, giving the single-pane mobile/tablet stack. The left column currently holds placeholder text; US-F01 replaces its contents with the real thread list, US-J03's `EmptyState`/`Skeleton` land inside it too — don't restructure the shell itself for that, just swap what's inside the `<aside>`.
+- `src/routes/logout/+server.ts` (`POST`) clears the session cookie and redirects to `/login`. It's presence-only cookie clearing today (matches `hasSessionCookie`'s presence-only check); once US-B05 lands, also delete the corresponding `sessions` row here.
+- **Any internal `<a href="/...">` (or programmatic navigation) must wrap the path in `resolve(...)` from `$app/paths`** (e.g. `href={resolve('/inbox')}`), not a raw string — this kit version's `svelte/no-navigation-without-resolve` lint rule fails `npm run lint` otherwise. Apply this to every new internal link across the app, not just the shell.
+
 ## Workflow
 
 - This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR, human merges.
