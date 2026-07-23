@@ -69,7 +69,7 @@
 			<h2 class="mb-3 font-sans text-sm font-medium text-text-muted">Motion</h2>
 			<button
 				type="button"
-				class="duration-fast w-fit rounded border border-border bg-surface px-4 py-2 font-sans text-sm transition-colors ease-standard hover:border-accent hover:text-accent"
+				class="w-fit rounded border border-border bg-surface px-4 py-2 font-sans text-sm transition-colors duration-fast ease-standard hover:border-accent hover:text-accent"
 			>
 				Hover me (120ms ease-out)
 			</button>

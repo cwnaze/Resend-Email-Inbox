@@ -109,6 +109,25 @@
 	--ease-standard: cubic-bezier(0, 0, 0.2, 1);
 }
 
+/*
+ * Tailwind v4 has no `--duration-*` theme namespace, so the custom
+ * properties above don't generate `duration-fast`/`duration`/`duration-slow`
+ * utilities on their own (unlike `--color-*`/`--radius-*`/`--ease-*`, which
+ * do have namespaces Tailwind auto-generates utilities from). Declare them
+ * explicitly so the motion tokens are actually usable as Tailwind classes.
+ */
+@utility duration-fast {
+	transition-duration: var(--duration-fast);
+}
+
+@utility duration {
+	transition-duration: var(--duration);
+}
+
+@utility duration-slow {
+	transition-duration: var(--duration-slow);
+}
+
 body {
 	background-color: var(--color-background);
 	color: var(--color-text-primary);

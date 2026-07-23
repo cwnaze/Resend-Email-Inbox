@@ -11,7 +11,7 @@
 	onclick={toggleTheme}
 	aria-label={label}
 	title={label}
-	class="duration-fast rounded border border-border bg-surface px-3 py-1.5 font-mono text-sm text-text-primary transition-colors ease-standard hover:border-accent"
+	class="rounded border border-border bg-surface px-3 py-1.5 font-mono text-sm text-text-primary transition-colors duration-fast ease-standard hover:border-accent"
 >
 	{themeState.current === 'light' ? '☀︎ light' : '☾ dark'}
 </button>
