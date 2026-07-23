@@ -28,6 +28,13 @@
 - Required env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` (read via `$env/dynamic/private`, same pattern as the Turso vars). The module throws at import time if any are missing.
 - Only import `src/lib/server/r2` from server-only code (`+page.server.ts`, `+server.ts`, `src/lib/server/**`) — same rule as the `db` client.
 
+## Auth (session cookie)
+
+- `src/lib/server/auth/session.ts` exports `SESSION_COOKIE_NAME` — the single shared constant for the session cookie's name. Any code that reads, sets, or clears the session cookie should import this rather than repeating the string literal (auth-code verification sets it, the `(app)` layout checks it, logout clears it).
+- `src/routes/(app)/+layout.server.ts` currently only checks that the session cookie is _present_ (`redirect(303, '/login')` if absent) — it does not yet look up a `sessions` DB row. Full expiry/validity checking against the `sessions` table is a separate, later story's concern; don't assume this layout already rejects a forged/expired cookie.
+
 ## Workflow
 
 - This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR, human merges.
+- When capturing `curl -i` output in a `showboat exec` block, strip the `\r` from HTTP header lines (e.g. `tr -d '\r'`) in the exact command that gets recorded — otherwise `showboat verify` reports a mismatch (expected vs. re-run actual) even though both look textually identical in a terminal; the difference is invisible `\r` bytes only visible via `od -c`.
+- `showboat pop` removes only the single most recent entry. If several blocks were exec'd in a row and an earlier one needs fixing, it's simpler to hand-edit the demo `.md` file directly (just don't touch the `showboat-id` HTML comment) than to chain multiple `pop`s.

@@ -61,8 +61,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added src/routes/(app)/+layout.server.ts: a scaffold-level session gate that checks only for *presence* of the session cookie (name centralized in the new src/lib/server/auth/session.ts as SESSION_COOKIE_NAME) and redirects (303) to /login if absent — no sessions-table lookup yet, since that table isn't merged to main until US-D01 and full expiry/DB validation is US-B05's job. Added placeholder src/routes/(app)/inbox/+page.svelte and src/routes/login/+page.svelte. Verified end-to-end: curl confirms unauthenticated GET /inbox returns 303 -> /login and a request carrying any session cookie value passes through to 200 (placeholder-level check only); a real headless-Chrome run via rodney confirms the browser lands on /login when visiting /inbox unauthenticated and renders the placeholder 'Log in' heading. Also added .rodney to .gitignore (rodney's local browser-automation state dir was failing `prettier --check .`) since that fix from US-D01's not-yet-merged branch wasn't present on main yet. See docs/demos/US-A03.md for full proof-of-work (showboat verify passes, exit 0)."
     },
     {
       "id": "US-D01",
