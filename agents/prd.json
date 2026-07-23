@@ -61,8 +61,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "src/lib/server/auth/session.ts exports SESSION_COOKIE_NAME + hasSessionCookie (presence-only check; no sessions table yet, that's US-B01). src/routes/(app)/+layout.server.ts redirects to /login if the cookie is missing. Placeholder pages at src/routes/login/+page.svelte and src/routes/(app)/inbox/+page.svelte. Verified via curl (302 to /login unauthenticated, 200 with a fake session cookie) and rodney (unauthenticated /inbox visit lands on /login, screenshot in docs/demos/US-A03.md)."
     },
     {
       "id": "US-D01",

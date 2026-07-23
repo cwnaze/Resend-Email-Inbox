@@ -28,6 +28,13 @@
 - Required env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` (read via `$env/dynamic/private`, same pattern as the Turso vars). The module throws at import time if any are missing.
 - Only import `src/lib/server/r2` from server-only code (`+page.server.ts`, `+server.ts`, `src/lib/server/**`) — same rule as the `db` client.
 
+## Auth / route protection
+
+- Every mailbox route lives under the `src/routes/(app)/` route group. `src/routes/(app)/+layout.server.ts` is the single choke point: it redirects to `/login` if the session cookie is missing, via `hasSessionCookie` in `src/lib/server/auth/session.ts`. Add new protected pages under `(app)/` and they inherit this check automatically — no per-route auth code needed.
+- `src/lib/server/auth/session.ts` currently only checks that the `session` cookie (name in `SESSION_COOKIE_NAME`) is present and non-empty — it does **not** validate against the database yet, because the `sessions` table doesn't exist until US-B01. When US-B01/US-B05 land, replace the presence check in `(app)/+layout.server.ts` with a real lookup (hash the cookie value, query `sessions`, check `expires_at`) rather than adding a second parallel check.
+- `/login` (`src/routes/login/+page.svelte`) and `/inbox` (`src/routes/(app)/inbox/+page.svelte`) are intentionally placeholder pages pending US-B04 (login UI) and the real inbox-list stories — don't be surprised they're empty shells.
+- `.rodney/` (local rodney browser-automation state, created by `rodney --local`) is gitignored — don't commit it, and don't let a stray `npm run lint` failure from it confuse you; it should never show up in `git status` once `.gitignore` has the entry.
+
 ## Workflow
 
 - This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR, human merges.
