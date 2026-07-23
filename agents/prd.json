@@ -76,8 +76,8 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "src/lib/server/db/schema.ts now defines all six tables (contacts, threads, emails, attachments, auth_codes, sessions) exactly per tasks/prd-data-model.md: booleans as integer({mode:'boolean'}), address lists as text({mode:'json'}), timestamps as integer({mode:'timestamp_ms'}) defaulting to unixepoch subsec * 1000. All 8 specified indexes present (including the 3 uniques: contacts.email, emails.message_id, sessions.token_hash). FKs (emails.thread_id -> threads.id, attachments.email_id -> emails.id) declared via .references(). Applied cleanly to the real Turso database via `npm run db:push -- --force` ('No changes detected' on immediate re-run, confirming idempotency). Verified end-to-end against the live DB via src/lib/server/db/verify-schema.mts: all 6 tables present, all 8 indexes present, FK constraint rejects an orphan thread_id insert, UNIQUE constraint rejects a duplicate message_id insert. See docs/demos/US-D01.md for full proof-of-work (showboat verify passes, exit 0)."
     },
     {
       "id": "US-J01",
