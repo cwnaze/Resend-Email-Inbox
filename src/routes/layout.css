@@ -1,1 +1,116 @@
 @import 'tailwindcss';
+
+/* Self-hosted webfonts (no external network requests at runtime). */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
+/*
+ * Dusk Terminal design tokens (see tasks/prd-ui-ux.md).
+ *
+ * Plain CSS custom properties hold the actual color values so they can be
+ * swapped at runtime via the `data-theme` attribute (see
+ * src/lib/theme.svelte.ts) without a page reload. `:root` below is the
+ * dark theme (the reference theme, ships first); `prefers-color-scheme:
+ * light` supplies the light theme as the default when no explicit choice
+ * has been made yet, and `[data-theme="light"]` / `[data-theme="dark"]`
+ * let an explicit user toggle always win regardless of OS preference.
+ */
+:root {
+	color-scheme: dark;
+	--dt-background: #12141c;
+	--dt-surface: #1a1d28;
+	--dt-border: #2a2e3d;
+	--dt-text-primary: #e6e8ef;
+	--dt-text-muted: #8a90a3;
+	--dt-accent: #7fb4a6;
+	--dt-accent-secondary: #c9a87c;
+	--dt-danger: #c97f7f;
+}
+
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme]) {
+		color-scheme: light;
+		--dt-background: #f5f4f0;
+		--dt-surface: #ffffff;
+		--dt-border: #dedcd3;
+		--dt-text-primary: #1a1d28;
+		--dt-text-muted: #6b7280;
+		--dt-accent: #4e8a7a;
+		--dt-accent-secondary: #a97f45;
+		--dt-danger: #b24a4a;
+	}
+}
+
+:root[data-theme='dark'] {
+	color-scheme: dark;
+	--dt-background: #12141c;
+	--dt-surface: #1a1d28;
+	--dt-border: #2a2e3d;
+	--dt-text-primary: #e6e8ef;
+	--dt-text-muted: #8a90a3;
+	--dt-accent: #7fb4a6;
+	--dt-accent-secondary: #c9a87c;
+	--dt-danger: #c97f7f;
+}
+
+:root[data-theme='light'] {
+	color-scheme: light;
+	--dt-background: #f5f4f0;
+	--dt-surface: #ffffff;
+	--dt-border: #dedcd3;
+	--dt-text-primary: #1a1d28;
+	--dt-text-muted: #6b7280;
+	--dt-accent: #4e8a7a;
+	--dt-accent-secondary: #a97f45;
+	--dt-danger: #b24a4a;
+}
+
+@theme {
+	/* Typography: humanist sans for prose/UI, monospace for all metadata
+	   (timestamps, addresses, thread/message ids, the login code field). */
+	--font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+	/* Palette tokens, re-exposed as Tailwind color utilities (bg-background,
+	   text-text-primary, border-border, text-accent, etc). Values point at
+	   the `--dt-*` custom properties above, which are the ones that actually
+	   change per-theme, so theme switching is automatic. */
+	--color-background: var(--dt-background);
+	--color-surface: var(--dt-surface);
+	--color-border: var(--dt-border);
+	--color-text-primary: var(--dt-text-primary);
+	--color-text-muted: var(--dt-text-muted);
+	--color-accent: var(--dt-accent);
+	--color-accent-secondary: var(--dt-accent-secondary);
+	--color-danger: var(--dt-danger);
+
+	/* Shape: 2-4px radius scale only, no pill shapes anywhere. This
+	   overrides Tailwind's entire default radius namespace (which otherwise
+	   goes up to a pill-shaped `rounded-full`) so every `rounded-*` utility
+	   in the app resolves to something in the 2-4px range. */
+	--radius-xs: 2px;
+	--radius-sm: 2px;
+	--radius: 3px;
+	--radius-md: 3px;
+	--radius-lg: 4px;
+	--radius-xl: 4px;
+	--radius-2xl: 4px;
+	--radius-3xl: 4px;
+	--radius-full: 4px;
+
+	/* Motion: 120-160ms, standard ease-out only, no bounce/spring easing. */
+	--duration-fast: 120ms;
+	--duration: 140ms;
+	--duration-slow: 160ms;
+	--ease-standard: cubic-bezier(0, 0, 0.2, 1);
+}
+
+body {
+	background-color: var(--color-background);
+	color: var(--color-text-primary);
+	font-family: var(--font-sans);
+}
