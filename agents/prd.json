@@ -122,8 +122,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added src/lib/components/EmptyState.svelte, Skeleton.svelte, ErrorMessage.svelte using the Dusk Terminal tokens from US-J01. Demonstrated (not yet wired into real features) via a new Shared states section on /dev/tokens. Real usage in Inbox List/Thread View/Compose/Contacts lands with those respective stories (US-F/G/H/I)."
     },
     {
       "id": "US-B01",
@@ -137,7 +137,7 @@
       ],
       "priority": 9,
       "passes": true,
-      "notes": "Added src/lib/server/auth/auth-codes.ts (createAuthCode/getActiveAuthCode/invalidateActiveAuthCodes/incrementAuthCodeAttempts/markAuthCodeUsed) and src/lib/server/auth/sessions-store.ts (createSession/getValidSessionByTokenHash/extendSessionExpiry/deleteSessionByTokenHash) as reusable Drizzle query helpers for auth_codes/sessions, ready for US-B02/B03/B05 to call. Each function is dependency-injected on a db handle (typed via `import type` of the db singleton, so no $env/dynamic/private runtime dependency) instead of importing the db singleton directly, so the same functions run in real app code and in a standalone verification script. Verified end-to-end against the live Turso database via src/lib/server/auth/verify-auth-sessions.mts: create/invalidate/expire/use/attempt-increment flows for auth_codes, create/read/extend/delete flows for sessions, all 16 assertions pass. See docs/demos/US-B01.md for verification proof (showboat verify passes, exit 0)."
+      "notes": "Added src/lib/server/auth/auth-codes.ts (createAuthCode/getActiveAuthCode/invalidateActiveAuthCodes/incrementAuthCodeAttempts/markAuthCodeUsed) and src/lib/server/auth/sessions-store.ts (createSession/getValidSessionByTokenHash/extendSessionExpiry/deleteSessionByTokenHash) as reusable Drizzle query helpers for auth_codes/sessions, ready for US-B02/B03/B05 to call. Each function is dependency-injected on a db handle (typed as Database from src/lib/server/db/types.ts, an `import type` of the db singleton, so no $env/dynamic/private runtime dependency) instead of importing the db singleton directly, so the same functions run in real app code and in a standalone verification script. Verified end-to-end against the live Turso database via src/lib/server/auth/verify-auth-sessions.mts: create/invalidate/expire/use/attempt-increment flows for auth_codes, create/read/extend/delete flows for sessions, all 19 assertions pass. See docs/demos/US-B01.md for verification proof (showboat verify passes, exit 0). PR review follow-up: incrementAuthCodeAttempts increments in SQL (atomic, so concurrent wrong-code guesses cannot lose updates and bypass the 5-attempt lockout); markAuthCodeUsed carries an isNull(usedAt) compare-and-swap guard whose undefined return means \"already consumed, reject\"; invalidateActiveAuthCodes supersedes by pulling expires_at back rather than stamping used_at, so used_at IS NOT NULL still means \"actually redeemed\"."
     },
     {
       "id": "US-B02",

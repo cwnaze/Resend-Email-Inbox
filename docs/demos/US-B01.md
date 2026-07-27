@@ -12,11 +12,14 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/auth/verify-auth-sessi
 ```output
 PASS: createAuthCode inserts a row
 PASS: getActiveAuthCode finds the freshly created code
-PASS: invalidateActiveAuthCodes invalidates the prior active code
+PASS: invalidateActiveAuthCodes supersedes the prior active code
 PASS: no active code remains after invalidation
+PASS: a superseded code has used_at still NULL (expired, not redeemed)
 PASS: getActiveAuthCode finds the second code
 PASS: incrementAuthCodeAttempts bumps attempt_count to 1
+PASS: four concurrent increments all land (attempt_count === 5)
 PASS: markAuthCodeUsed sets used_at
+PASS: markAuthCodeUsed returns undefined for an already-used code
 PASS: getActiveAuthCode returns null once the code is used
 PASS: an expired code is not returned as active
 PASS: createSession inserts a row
@@ -38,7 +41,7 @@ npm run check 2>&1 | sed -E 's/^[0-9]{10,} //'
 > svelte-kit sync && svelte-check --tsconfig ./tsconfig.json
 
 START "/Users/bloodintern1/Desktop/Resend-Email-Inbox"
-COMPLETED 1186 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
+COMPLETED 1190 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
 ```
 
 ```bash

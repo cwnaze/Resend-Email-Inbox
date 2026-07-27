@@ -18,13 +18,14 @@
 // All rows this script creates are cleaned up (deleted by id) before exiting,
 // so re-running it (e.g. via `showboat verify`) starts from the same state
 // every time.
-import { createHash, randomInt } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import * as schema from '../db/schema.ts';
 import {
 	countAuthCodeRequestsSince,
 	createAuthCode,
+	hashAuthCode,
 	invalidateActiveAuthCodes
 } from './auth-codes.ts';
 
@@ -55,10 +56,6 @@ function generateCode(): string {
 	return randomInt(0, 1_000_000).toString().padStart(6, '0');
 }
 
-function hashCode(code: string): string {
-	return createHash('sha256').update(code).digest('hex');
-}
-
 async function main() {
 	const now = new Date();
 	const windowStart = new Date(now.getTime() - 10 * 60 * 1000);
@@ -67,51 +64,65 @@ async function main() {
 	const codeA = generateCode();
 	const codeB = generateCode();
 	assert(/^\d{6}$/.test(codeA), 'generated code is exactly 6 digits');
-	assert(codeA !== codeB || codeA === codeB, 'two independently generated codes were produced'); // sanity, not a strict inequality (birthday collisions are possible)
-	assert(hashCode(codeA) === hashCode(codeA), 'hashing the same code twice yields the same hash');
+	// Any single pair can legitimately collide (1-in-10^6), so assert on a
+	// sample instead: 100 draws from a 10^6 space are essentially never all equal.
+	const sample = new Set(Array.from({ length: 100 }, generateCode));
+	assert(sample.size > 1, '100 generated codes yield more than one distinct value');
 	assert(
-		hashCode(codeA) !== hashCode(codeB),
+		hashAuthCode(codeA) === hashAuthCode(codeA),
+		'hashing the same code twice yields the same hash'
+	);
+	assert(
+		hashAuthCode(codeA) !== hashAuthCode(codeB),
 		'hashing two different codes yields different hashes'
 	);
-	assert(hashCode(codeA) !== codeA, 'the stored hash is never equal to the raw code');
+	assert(hashAuthCode(codeA) !== codeA, 'the stored hash is never equal to the raw code');
 
 	console.log('2. Rate limiting (3 requests per rolling window):');
+	// Scoped to rows *this run* creates: this points at the shared live Turso DB,
+	// so a legitimate code request in the preceding 10 minutes would otherwise
+	// fail the script for a reason that isn't a bug.
 	const before = await countAuthCodeRequestsSince(db, windowStart);
-	assert(before === 0, 'no prior auth_codes rows exist in the window before this run');
 
 	for (let i = 0; i < 3; i++) {
 		await invalidateActiveAuthCodes(db, now);
 		const row = await createAuthCode(
 			db,
-			hashCode(generateCode()),
+			hashAuthCode(generateCode()),
 			new Date(now.getTime() + 600_000)
 		);
 		createdIds.push(row.id);
 	}
 	const afterThree = await countAuthCodeRequestsSince(db, windowStart);
-	assert(afterThree === 3, 'exactly 3 requests are counted after 3 creates');
+	assert(afterThree - before === 3, 'exactly 3 additional requests are counted after 3 creates');
 
-	const wouldBeBlocked = afterThree >= 3;
+	const wouldBeBlocked = afterThree - before >= 3;
 	assert(wouldBeBlocked, 'a 4th request in the same window would be rejected (count >= 3)');
 
 	console.log('3. Invalidation (only one active code at a time):');
 	const rows = await db.query.authCodes.findMany({
 		where: (t, { inArray }) => inArray(t.id, createdIds)
 	});
-	const usedCount = rows.filter((r) => r.usedAt !== null).length;
+	// invalidateActiveAuthCodes supersedes by pulling expires_at back to now — it
+	// deliberately does NOT set used_at, which stays reserved for "actually
+	// redeemed" (see auth-codes.ts).
+	const isActive = (r: (typeof rows)[number]) => r.usedAt === null && r.expiresAt > now;
 	assert(
-		usedCount === 2,
-		'the 2 earlier codes were invalidated (used_at set) when later codes were requested'
+		rows.filter((r) => !isActive(r)).length === 2,
+		'the 2 earlier codes were superseded (expires_at pulled back) when later codes were requested'
 	);
-	const activeCount = rows.filter((r) => r.usedAt === null).length;
-	assert(activeCount === 1, 'exactly 1 code (the most recent) remains active');
+	assert(rows.filter(isActive).length === 1, 'exactly 1 code (the most recent) remains active');
+	assert(
+		rows.every((r) => r.usedAt === null),
+		'superseding never sets used_at (that means "redeemed", not "superseded")'
+	);
 
 	console.log('\nCleaning up test rows...');
 	for (const id of createdIds) {
 		await client.execute({ sql: 'delete from auth_codes where id = ?', args: [id] });
 	}
 	const afterCleanup = await countAuthCodeRequestsSince(db, windowStart);
-	assert(afterCleanup === 0, 'all test rows were cleaned up (window count back to 0)');
+	assert(afterCleanup === before, 'all test rows were cleaned up (window count back to baseline)');
 
 	console.log(`\n${passed} passed, ${failed} failed`);
 	await client.close();
