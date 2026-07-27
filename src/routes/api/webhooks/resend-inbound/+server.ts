@@ -7,12 +7,18 @@
 // US-E01 built the verification gate. US-E02 added parsing and the sender
 // contact upsert. US-E03 adds HTML sanitization + the idempotent `emails`
 // insert (`storeInboundEmail`), and US-E04 thread assignment inside it too.
-// Attachment upload (US-E05) hangs off the same `parsed` object below.
+// US-E05 hangs attachment download + R2 upload off the same `parsed` object.
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { verifySvixRequest } from '$lib/server/webhooks/svix';
 import { parseInboundWebhookEvent, parseReceivedEmail } from '$lib/server/inbound/parse';
-import { fetchReceivedEmail, ReceivedEmailFetchError } from '$lib/server/email/resend';
+import {
+	fetchReceivedAttachmentBytes,
+	fetchReceivedEmail,
+	ReceivedEmailFetchError
+} from '$lib/server/email/resend';
+import { storeInboundAttachments } from '$lib/server/inbound/attachments';
+import { uploadToR2 } from '$lib/server/r2';
 import { upsertContactFromInbound } from '$lib/server/db/contacts';
 import { storeInboundEmail } from '$lib/server/inbound/store';
 import { db } from '$lib/server/db';
@@ -66,13 +72,34 @@ export const POST: RequestHandler = async ({ request }) => {
 	// and the contact id already identifies the row if it needs looking up.
 	const { email, created: emailCreated, threadMatch } = await storeInboundEmail(db, parsed);
 
+	// Attachments (US-E05) only on a genuinely new email: a redelivery's bytes are
+	// already in R2 under the same key, and re-downloading them would burn the
+	// whole ingestion budget re-uploading files this mailbox already has.
+	let attachmentSummary = '';
+	if (emailCreated && parsed.attachments.length > 0) {
+		const { stored, failed } = await storeInboundAttachments(
+			db,
+			{
+				emailId: email.id,
+				resendEmailId: parsed.resendEmailId,
+				attachments: parsed.attachments
+			},
+			{
+				download: fetchReceivedAttachmentBytes,
+				upload: (key, body, contentType) => uploadToR2(key, body, contentType)
+			}
+		);
+		attachmentSummary = ` attachments ${stored.length}/${parsed.attachments.length} stored${
+			failed.length > 0 ? `, ${failed.length} failed` : ''
+		};`;
+	}
+
 	console.log(
 		`inbound email ${parsed.resendEmailId}`,
 		`(contact ${contact.id} ${created ? 'created' : 'existing'};`,
 		`email ${email.id} ${emailCreated ? 'stored' : 'duplicate, skipped'};`,
-		`thread ${email.threadId} ${threadMatch})`
+		`thread ${email.threadId} ${threadMatch};${attachmentSummary})`
 	);
 
-	// US-E05 hangs attachment upload off `parsed.attachments` + `email.id` here.
 	return json({ ok: true, duplicate: !emailCreated });
 };
