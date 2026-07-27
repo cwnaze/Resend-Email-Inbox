@@ -23,7 +23,11 @@ export type ReceivedEmailRecord = GetReceivingEmailResponseSuccess;
 export type ParsedInboundEmail = {
 	/** Resend's own id for the received email (not the RFC Message-ID). */
 	resendEmailId: string;
-	/** RFC 5322 Message-ID, angle brackets included, as Resend reports it. */
+	/**
+	 * RFC 5322 Message-ID, angle brackets included, as Resend reports it —
+	 * or a synthesized stand-in when the delivery carries none (see
+	 * `inboundMessageId`). Never empty: it is the app's idempotence key.
+	 */
 	messageId: string;
 	/** `In-Reply-To` header if present — US-E04 threads on this. */
 	inReplyTo: string | null;
@@ -150,6 +154,27 @@ function parseReferences(values: string[]): string[] {
 	return values.flatMap((value) => value.split(/\s+/)).filter((ref) => ref !== '');
 }
 
+/**
+ * The idempotence key for an inbound delivery (FR-2).
+ *
+ * `Message-ID` is technically optional in RFC 5322 and the field is not
+ * validated by Resend, so neither an absent nor an empty value can be ruled
+ * out. Both have to be handled here rather than downstream: an empty string
+ * would make `getEmailByMessageId('')` match the *first* such email and then
+ * silently discard every later one as a duplicate — mail lost with a `200`,
+ * the worst possible failure for this pipeline — and a null would fail the
+ * `NOT NULL` insert, throwing a 500 that Resend retries forever against a
+ * permanent condition.
+ *
+ * The fallback is derived from Resend's own email id, which is unique per
+ * received email and stable across redeliveries — so idempotence still holds
+ * for exactly the case it needs to.
+ */
+function inboundMessageId(received: ReceivedEmailRecord): string {
+	const reported = typeof received.message_id === 'string' ? received.message_id.trim() : '';
+	return reported === '' ? `<resend-${received.id}@inbound.invalid>` : reported;
+}
+
 function parseDate(value: string | null, fallback: string): Date {
 	for (const candidate of [value, fallback]) {
 		if (!candidate) continue;
@@ -176,7 +201,7 @@ export function parseReceivedEmail(received: ReceivedEmailRecord): ParsedInbound
 
 	return {
 		resendEmailId: received.id,
-		messageId: received.message_id,
+		messageId: inboundMessageId(received),
 		inReplyTo: header(received.headers, 'in-reply-to'),
 		references: parseReferences(headerValues(received.headers, 'references')),
 		fromEmail,

@@ -144,6 +144,26 @@ console.log('\nparseReceivedEmail — real delivery');
 {
 	const p = parseReceivedEmail(realDelivery);
 	equal('message_id', p.messageId, '<abc-123@example.com>');
+
+	// Message-ID is optional in RFC 5322 and unvalidated by Resend, but it is the
+	// app's idempotence key — an empty one would make every subsequent such email
+	// look like a duplicate of the first and be dropped with a 200.
+	for (const [label, value] of [
+		['absent', undefined],
+		['null', null],
+		['empty', ''],
+		['whitespace-only', '   ']
+	] as const) {
+		const fallback = parseReceivedEmail({
+			...realDelivery,
+			message_id: value
+		} as unknown as GetReceivingEmailResponseSuccess);
+		equal(
+			`a ${label} message_id falls back to the Resend email id`,
+			fallback.messageId,
+			`<resend-${realDelivery.id}@inbound.invalid>`
+		);
+	}
 	equal('from address is lowercased from Resend`s own field', p.fromEmail, 'sender@example.com');
 	equal('display name unquoted from the From: header', p.fromName, 'Example Sender');
 	equal('to', p.toEmails, ['owner@example.com']);
@@ -344,8 +364,14 @@ try {
 	// -------------------------------------------------------------------------
 	console.log('\nstoreInboundEmail — live DB');
 
+	// The subject is overridden with a per-run unique one on purpose. Keeping
+	// `realDelivery.subject` would let this row subject-match (US-E04's 30-day
+	// fallback) onto the thread `verify-inbound-webhook.mts` creates from the
+	// same real email in this same live DB — making `threadMatch` depend on
+	// which script ran last, and pointing cleanup at a thread holding real rows.
 	const parsed = parseReceivedEmail({
 		...realDelivery,
+		subject: `US-E03 store fixture ${stamp}`,
 		message_id: `<us-e03-${stamp}@example.com>`,
 		headers: {
 			...realDelivery.headers,
@@ -368,13 +394,17 @@ try {
 		stored.email.receivedAt.toISOString(),
 		'2026-07-25T15:15:31.000Z'
 	);
-	check('a thread was created for it', typeof stored.email.threadId === 'string');
+	equal('a thread was created for it', stored.threadMatch, 'new');
 
 	const { rows: threadRowsBefore } = await client.execute({
-		sql: 'select count(*) as n from threads where id = ?',
+		sql: 'select subject from threads where id = ?',
 		args: [stored.email.threadId]
 	});
-	equal('exactly one thread row', Number(threadRowsBefore[0].n), 1);
+	equal(
+		'the thread stores the normalized subject',
+		threadRowsBefore[0]?.subject,
+		`us-e03 store fixture ${stamp}`.toLowerCase()
+	);
 
 	// A redelivery of the same message_id must be a no-op, not a 500 — and must
 	// not leave an orphan thread behind either, so the whole-table count is what
@@ -549,12 +579,23 @@ try {
 			.from(emails)
 			.where(inArray(emails.messageId, storedMessageIds));
 		await db.delete(emails).where(inArray(emails.messageId, storedMessageIds));
-		const threadIds = doomed.map((row) => row.threadId);
-		if (threadIds.length > 0) {
-			await db.delete(threads).where(inArray(threads.id, threadIds));
+
+		// Only drop a thread that is now *empty*. A thread this run merely joined
+		// may still hold rows it did not create — including real user mail — and
+		// deleting it would either throw SQLITE_CONSTRAINT out of `finally` (the
+		// remote Turso connection enforces FKs) and mask the run's results, or,
+		// worse, destroy genuine data. Same guard the sibling webhook script uses.
+		const threadIds = [...new Set(doomed.map((row) => row.threadId))];
+		let removedThreads = 0;
+		for (const threadId of threadIds) {
+			const { rowsAffected } = await client.execute({
+				sql: 'delete from threads where id = ? and not exists (select 1 from emails where thread_id = ?)',
+				args: [threadId, threadId]
+			});
+			removedThreads += Number(rowsAffected);
 		}
 		console.log(
-			`cleanup: ${doomed.length} email row(s) and ${threadIds.length} thread row(s) removed`
+			`cleanup: ${doomed.length} email row(s) and ${removedThreads} thread row(s) removed`
 		);
 	}
 

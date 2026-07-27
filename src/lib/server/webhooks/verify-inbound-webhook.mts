@@ -211,9 +211,20 @@ if (!apiKey || !tursoUrl || !tursoToken) {
 
 		// US-E04: the stored email hangs off a real thread whose subject is the
 		// normalized one and whose sort/read state matches the message.
+		//
+		// This exercises the new-thread path only — the leftovers from prior runs
+		// are deleted above, so there is nothing here for the reply/subject
+		// strategies to match against. Those live in `verify-inbound-parse.mts`,
+		// which builds a real reply chain. The assertions are still written so
+		// they can actually fail: `last_message_at` is compared for *equality*
+		// with the message's own timestamp (a `>=` is true by construction, since
+		// the column is a `max()` against exactly that value), and the thread is
+		// required to hold exactly one email after the redelivery above — a
+		// duplicate must not attach a second row to it.
 		const { rows: threadRows } = await turso.execute({
 			sql: `select t.subject as subject, t.is_read as is_read,
-			             t.last_message_at as last_message_at, e.received_at as received_at
+			             t.last_message_at as last_message_at, e.received_at as received_at,
+			             (select count(*) from emails where thread_id = t.id) as email_count
 			      from emails e join threads t on t.id = e.thread_id
 			      where e.message_id = ?`,
 			args: [received.message_id]
@@ -223,10 +234,11 @@ if (!apiKey || !tursoUrl || !tursoToken) {
 			thread !== undefined &&
 			thread.subject === normalizeSubject(received.subject ?? '') &&
 			Number(thread.is_read) === 0 &&
-			Number(thread.last_message_at) >= Number(thread.received_at);
+			Number(thread.last_message_at) === Number(thread.received_at) &&
+			Number(thread.email_count) === 1;
 		if (!threaded) failures++;
 		console.log(
-			`${threaded ? 'PASS' : 'FAIL'}  email is attached to a thread with the normalized subject, unread, sorted by its own timestamp`
+			`${threaded ? 'PASS' : 'FAIL'}  email is attached to a new thread with the normalized subject, unread, holding it alone`
 		);
 
 		// A verified payload for a *different* event type is ignored, not 500'd.
