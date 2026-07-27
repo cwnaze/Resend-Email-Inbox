@@ -2,7 +2,7 @@
 
 You are an autonomous coding agent working on a software project.
 
-**Driver:** these instructions describe ONE iteration only and assume a fresh agent with no memory of prior iterations. **This project uses a per-story branch + PR + human-merge-gate workflow, not the fully autonomous `ralph-loop.js` loop** — each iteration implements exactly one story, opens a PR, and stops. The next iteration is only triggered manually (by the human) after that PR is merged, so do not chain into the next story automatically.
+**Driver:** these instructions describe ONE iteration only and assume a fresh agent with no memory of prior iterations. **This project uses a per-story branch + PR + self-review-loop + self-merge workflow.** Each iteration implements exactly one story, opens a PR, reviews that PR, fixes what the review finds, re-reviews until a pass comes back clean, merges to `main`, and then moves on to the next story. Iterations chain automatically until every story in `prd.json` has `passes: true`.
 
 ## Your Task
 
@@ -30,7 +30,13 @@ You are an autonomous coding agent working on a software project.
     If a story mixes concerns, pick the type matching its primary intent; split into multiple commits within the branch if that's cleaner than picking one type.
 14. Update the PRD to set `passes: true` for the completed story, and commit that PRD update on the same story branch (`chore(US-XXX): mark story complete` or folded into the main story commit)
 15. Append your progress to `progress.txt`, and commit that update on the same story branch
-16. Push the branch (`git push -u origin <branch-name>`) and open a PR against `main` via `gh pr create` — title `<type>(<story-id>): <short summary>` matching the primary commit, body summarizing what was implemented and how it was verified. Do **not** merge it yourself.
+16. Push the branch (`git push -u origin <branch-name>`) and open a PR against `main` via `gh pr create` — title `<type>(<story-id>): <short summary>` matching the primary commit, body summarizing what was implemented and how it was verified.
+17. **Review/fix loop.** Run the `/code-review` skill against the PR's diff. Then:
+    - If it reports findings: fix every one of them on the story branch (or, for a finding you judge to be a false positive, say so explicitly in your report and why), re-run the quality checks, commit, and push.
+    - Re-run `/code-review` on the updated diff.
+    - Repeat until a review pass returns **zero findings**. There is no round cap — keep looping. If you find yourself oscillating (the same finding reappearing after a fix, or fixes trading one finding for another across three-plus rounds), stop looping and report the deadlock instead of merging.
+18. Once a review pass is clean and `npm run check` + `npm run lint` + `showboat verify` all pass on the final commit, merge the PR to `main` (`gh pr merge --squash --delete-branch`), then `git checkout main && git pull`.
+19. Go back to step 3 and start the next story. Continue until every story in `prd.json` has `passes: true`.
 
 ### Tool Discovery & Usage Rules
 You have two primary specialized tools. Treat their `--help` outputs as your definitive skill specifications:
@@ -115,15 +121,19 @@ If no browser tools are available, note in your progress report that manual brow
 
 ## Stop Condition
 
-**Always stop after one story, regardless of how many stories remain.** Once the PR is opened for the current story, report the PR URL and stop — do not check out another story or start implementing further work in this iteration. A human reviews and merges the PR; the next iteration (a fresh agent invocation) only starts after that merge and is triggered manually, not automatically.
+Keep cycling story → PR → review → fix → review → merge until one of these is true:
 
-If, after opening the PR, every story in `prd.json` already has `passes: true` (i.e. this was the last one), say so explicitly in your final report in addition to the PR URL.
+- Every story in `prd.json` has `passes: true`. Say so explicitly in your final report.
+- The review/fix loop deadlocks on a story (see step 17). Leave the PR open, do not merge, and report what's stuck.
+- A story genuinely cannot be completed (missing credential, ambiguous acceptance criteria, blocked on a decision only the human can make). Report the blocker rather than guessing or faking a pass.
+
+Report each merged story's PR URL as you go, so progress is visible without waiting for the whole run.
 
 ## Important
 
-- Work on ONE story per iteration, on its own branch, ending in exactly one open PR
-- Never merge your own PR
-- Never start a second story in the same iteration, even if time/context remains
+- Work on ONE story at a time, on its own branch, ending in exactly one merged PR
+- Never merge a PR whose latest review pass still has open findings
+- Never start the next story before the current one's PR is merged and `main` is pulled
 - Commit frequently within the story's branch
 - Keep CI green
 - Read the Codebase Patterns section in progress.txt before starting
