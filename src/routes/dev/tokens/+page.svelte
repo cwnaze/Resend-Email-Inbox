@@ -1,5 +1,10 @@
 <script lang="ts">
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import ErrorMessage from '$lib/components/ErrorMessage.svelte';
+
+	let retryCount = $state(0);
 
 	const palette = [
 		{ name: 'background', class: 'bg-background' },
@@ -62,6 +67,32 @@
 						<span class="font-mono text-xs text-text-muted">{radius.name}</span>
 					</div>
 				{/each}
+			</div>
+		</section>
+
+		<section>
+			<h2 class="mb-3 font-sans text-sm font-medium text-text-muted">Shared states</h2>
+			<div class="flex flex-col gap-6">
+				<div>
+					<p class="mb-2 font-mono text-xs text-text-muted">EmptyState</p>
+					<div class="rounded border border-border bg-surface">
+						<EmptyState message="Nothing here yet" subCopy="New messages will show up here." />
+					</div>
+				</div>
+				<div>
+					<p class="mb-2 font-mono text-xs text-text-muted">Skeleton</p>
+					<div class="rounded border border-border bg-background p-3">
+						<Skeleton rows={3} />
+					</div>
+				</div>
+				<div>
+					<p class="mb-2 font-mono text-xs text-text-muted">
+						ErrorMessage (retry count: {retryCount})
+					</p>
+					<div class="rounded border border-border bg-surface p-3">
+						<ErrorMessage message="Couldn't load this thread." onRetry={() => (retryCount += 1)} />
+					</div>
+				</div>
 			</div>
 		</section>
 

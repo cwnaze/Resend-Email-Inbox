@@ -122,8 +122,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added src/lib/components/EmptyState.svelte, Skeleton.svelte, ErrorMessage.svelte using the Dusk Terminal tokens from US-J01. Demonstrated (not yet wired into real features) via a new Shared states section on /dev/tokens. Real usage in Inbox List/Thread View/Compose/Contacts lands with those respective stories (US-F/G/H/I)."
     },
     {
       "id": "US-B01",
