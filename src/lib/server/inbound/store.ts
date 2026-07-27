@@ -38,9 +38,11 @@ export type StoreInboundEmailResult = {
  * headers are authoritative when present, and only their absence (or an
  * unknown parent) falls back to the fuzzy 30-day same-subject heuristic.
  *
- * Returns the created thread's id plus `createdThreadId` so the caller can undo
- * it if the email insert turns out to be a duplicate — a thread with nothing
- * pointing at it is litter in the inbox list.
+ * Runs inside `storeInboundEmail`'s transaction, so a thread created here is
+ * rolled back with everything else if the insert fails; `createdThreadId` is
+ * still reported because the *duplicate* case is not a failure and has to undo
+ * the thread explicitly — a thread with nothing pointing at it is litter in the
+ * inbox list.
  */
 async function assignThread(
 	db: Database,
@@ -89,6 +91,15 @@ async function assignThread(
  * ever written to the column; `bodyText` is stored as-is (it is never rendered
  * as markup).
  *
+ * Thread assignment, the insert and the thread touch all run in **one
+ * transaction**. They have to be atomic in both directions: a failure after the
+ * insert (a transient error on the touch) would otherwise leave a stored email
+ * whose thread still reads as read with a stale `last_message_at` — and because
+ * the duplicate check above short-circuits, Resend's redelivery would return
+ * early and never repair it, stranding a real message out of the inbox sort
+ * order permanently. Rolling back also means a failed insert takes its
+ * just-created thread with it, with no best-effort cleanup to get wrong.
+ *
  * `now` is injectable so the 30-day subject-fallback window can be exercised
  * deterministically from a verification script.
  */
@@ -101,16 +112,16 @@ export async function storeInboundEmail(
 	if (duplicate) return { email: duplicate, created: false, threadMatch: 'duplicate' };
 
 	const normalizedSubject = normalizeSubject(parsed.subject);
-	const { threadId, match, createdThreadId } = await assignThread(
-		db,
-		parsed,
-		normalizedSubject,
-		now
-	);
 
-	let result;
-	try {
-		result = await insertInboundEmail(db, {
+	return db.transaction(async (tx) => {
+		const { threadId, match, createdThreadId } = await assignThread(
+			tx,
+			parsed,
+			normalizedSubject,
+			now
+		);
+
+		const result = await insertInboundEmail(tx, {
 			threadId,
 			messageId: parsed.messageId,
 			inReplyTo: parsed.inReplyTo,
@@ -124,32 +135,23 @@ export async function storeInboundEmail(
 			bodyHtml: sanitizeEmailHtml(parsed.bodyHtml),
 			receivedAt: parsed.receivedAt
 		});
-	} catch (error) {
-		// A failed insert throws → the endpoint 500s → Resend redelivers. Without
-		// this, every retry would leave behind another empty `threads` row that
-		// nothing points at. Best-effort: the original error is what matters, so a
-		// cleanup failure must not mask it.
-		if (createdThreadId) {
-			try {
-				await deleteThread(db, createdThreadId);
-			} catch (cleanupError) {
-				console.warn(`failed to clean up thread ${createdThreadId}`, cleanupError);
-			}
+
+		if (!result.created) {
+			// Lost the race on the unique index. `onConflictDoNothing` is not an
+			// error, so nothing rolls back on its own: undo the thread this call
+			// created (if it created one) rather than leaving an empty conversation
+			// behind. Safe to delete unconditionally here — the row is still
+			// uncommitted, so no concurrent delivery can have attached an email to
+			// it and turned this into an FK violation. A thread we merely *joined*
+			// is left alone: it has other emails in it.
+			if (createdThreadId) await deleteThread(tx, createdThreadId);
+			return { ...result, threadMatch: 'duplicate' as const };
 		}
-		throw error;
-	}
 
-	if (!result.created) {
-		// Lost the race on the unique index: undo the thread this call created (if
-		// it created one) rather than leaving an empty conversation behind. A
-		// thread we merely *joined* is left alone — it has other emails in it.
-		if (createdThreadId) await deleteThread(db, createdThreadId);
-		return { ...result, threadMatch: 'duplicate' };
-	}
+		// Only once the email is actually stored: a new unread message makes its
+		// thread unread and (unless it is older) bumps its sort timestamp.
+		await touchThreadForNewMessage(tx, threadId, parsed.receivedAt);
 
-	// Only after the email is actually stored: a new unread message makes its
-	// thread unread and (unless it is older) bumps its sort timestamp.
-	await touchThreadForNewMessage(db, threadId, parsed.receivedAt);
-
-	return { ...result, threadMatch: match };
+		return { ...result, threadMatch: match };
+	});
 }

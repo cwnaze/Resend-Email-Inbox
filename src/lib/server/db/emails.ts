@@ -4,7 +4,7 @@
 // first argument (typed via `Database` from `./types`) rather than importing the
 // `db` singleton, so this module never pulls in `$env/dynamic/private` and can
 // be exercised by a standalone `tsx` verification script.
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { emails, threads } from './schema';
 import type { Database } from './types';
 
@@ -138,20 +138,25 @@ export async function findThreadBySubject(
  * email is unread by definition, so a previously-read thread becomes unread
  * again. `last_message_at` only ever moves forward: a late redelivery of an
  * older message must not drag a thread down the inbox sort order.
+ *
+ * The forward-only comparison is done in SQL (`max()`) rather than as a JS
+ * read-modify-write, for the same reason `incrementAuthCodeAttempts` does its
+ * arithmetic in SQL: two messages arriving into one thread concurrently would
+ * otherwise interleave select-then-update and let the older one's timestamp
+ * land last, defeating the very monotonicity this function exists to enforce.
+ * An update against an unknown `threadId` is a no-op, so no existence check is
+ * needed.
  */
 export async function touchThreadForNewMessage(
 	db: Database,
 	threadId: string,
 	messageAt: Date
 ): Promise<void> {
-	const [thread] = await db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
-	if (!thread) return;
-
 	await db
 		.update(threads)
 		.set({
 			isRead: false,
-			lastMessageAt: messageAt > thread.lastMessageAt ? messageAt : thread.lastMessageAt
+			lastMessageAt: sql`max(${threads.lastMessageAt}, ${messageAt.getTime()})`
 		})
 		.where(eq(threads.id, threadId));
 }
