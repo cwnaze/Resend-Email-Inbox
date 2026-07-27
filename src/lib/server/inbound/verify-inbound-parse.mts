@@ -23,6 +23,14 @@ import * as schema from '../db/schema.js';
 import { contacts } from '../db/schema.js';
 import type { Database } from '../db/types.js';
 import { getContactByEmail, normalizeEmail, upsertContactFromInbound } from '../db/contacts.js';
+import {
+	attachmentFilename,
+	attachmentObjectKey,
+	storeInboundAttachments,
+	type InboundAttachmentMetadata
+} from './attachments.js';
+import { getAttachmentsByEmailId } from '../db/attachments.js';
+import { attachments as attachmentsTable } from '../db/schema.js';
 import { parseInboundWebhookEvent, parseReceivedEmail } from './parse.js';
 import { sanitizeEmailHtml } from './sanitize.js';
 import { storeInboundEmail } from './store.js';
@@ -277,6 +285,69 @@ console.log('\nsanitizeEmailHtml');
 	equal('undefined in, null out', sanitizeEmailHtml(undefined), null);
 	equal('blank in, null out', sanitizeEmailHtml('   \n'), null);
 	equal('all-malicious body collapses to null', sanitizeEmailHtml('<script>x()</script>'), null);
+}
+
+// ---------------------------------------------------------------------------
+// Part 3b — attachment naming + R2 keys (pure, US-E05)
+// ---------------------------------------------------------------------------
+
+console.log('\nattachmentFilename / attachmentObjectKey');
+{
+	const meta = (over: Partial<InboundAttachmentMetadata>): InboundAttachmentMetadata => ({
+		id: 'att_1',
+		filename: 'report.pdf',
+		size: 1234,
+		content_type: 'application/pdf',
+		content_id: null,
+		content_disposition: 'attachment',
+		...over
+	});
+
+	equal('a plain filename survives', attachmentFilename(meta({})), 'report.pdf');
+	equal(
+		'a path-traversal filename is reduced to its last segment',
+		attachmentFilename(meta({ filename: '../../etc/passwd' })),
+		'passwd'
+	);
+	equal(
+		'a windows path is reduced too',
+		attachmentFilename(meta({ filename: 'C:\\Users\\me\\notes.txt' })),
+		'notes.txt'
+	);
+	equal(
+		'a null filename falls back to the attachment id',
+		attachmentFilename(meta({ filename: null })),
+		'attachment-att_1'
+	);
+	equal(
+		'a filename that is only path punctuation falls back too',
+		attachmentFilename(meta({ filename: '../' })),
+		'attachment-att_1'
+	);
+	equal(
+		'control bytes are stripped',
+		attachmentFilename(meta({ filename: 'in voice.pdf' })),
+		'invoice.pdf'
+	);
+	check(
+		'an absurdly long name is truncated',
+		attachmentFilename(meta({ filename: 'a'.repeat(400) })).length === 255
+	);
+
+	equal(
+		'the key is namespaced by the received-email id and the attachment id',
+		attachmentObjectKey('e625792c-1111', meta({})),
+		'inbound/e625792c-1111/att_1-report.pdf'
+	);
+	equal(
+		'the key never carries a sender-chosen path',
+		attachmentObjectKey('e625792c-1111', meta({ id: 'att_2', filename: '../../Evil Report.PDF' })),
+		'inbound/e625792c-1111/att_2-evil-report.pdf'
+	);
+	check(
+		'two attachments sharing a filename get different keys',
+		attachmentObjectKey('e1', meta({ id: 'a' })) !== attachmentObjectKey('e1', meta({ id: 'b' }))
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -572,12 +643,122 @@ try {
 	);
 	equal('an unrelated subject starts its own thread', unrelated.threadMatch, 'new');
 	check('unrelated mail is not merged', unrelated.email.threadId !== root.email.threadId);
+
+	// -------------------------------------------------------------------------
+	// storeInboundAttachments — live DB, stubbed provider + R2 (US-E05)
+	// -------------------------------------------------------------------------
+	//
+	// The download and the upload are the two injected dependencies, so this runs
+	// the real R2-key derivation and the real `attachments` insert without
+	// touching Resend or the bucket. The important behaviour to pin is the third
+	// acceptance criterion: one failing attachment must not take the others (or
+	// the already-stored email) with it.
+	console.log('\nstoreInboundAttachments — live DB');
+
+	const attachmentHost = await store(
+		inbound({
+			id: `us-e05-${stamp}`,
+			subject: `US-E05 attachments ${stamp}`,
+			date: '2026-07-25T16:00:00.000Z'
+		})
+	);
+	const meta = (id: string, filename: string | null): InboundAttachmentMetadata => ({
+		id,
+		filename,
+		size: 3,
+		content_type: 'text/plain',
+		content_id: null,
+		content_disposition: 'attachment'
+	});
+	const uploaded: string[] = [];
+	const result = await storeInboundAttachments(
+		db,
+		{
+			emailId: attachmentHost.email.id,
+			resendEmailId: `us-e05-${stamp}`,
+			attachments: [meta('att_ok', 'notes.txt'), meta('att_bad', 'boom.txt'), meta('att_2', null)]
+		},
+		{
+			download: async (_emailId, attachmentId) => {
+				if (attachmentId === 'att_bad') throw new Error('simulated download failure');
+				return { bytes: new TextEncoder().encode('hi\n'), contentType: 'text/plain' };
+			},
+			upload: async (key) => {
+				uploaded.push(key);
+			}
+		}
+	);
+
+	equal('the failing attachment is reported, not thrown', result.failed, ['att_bad']);
+	equal('the other two are stored', result.stored.length, 2);
+	equal('only successful uploads hit R2', uploaded, [
+		`inbound/us-e05-${stamp}/att_ok-notes.txt`,
+		`inbound/us-e05-${stamp}/att_2-attachment-att_2`
+	]);
+
+	const rowsForEmail = await getAttachmentsByEmailId(db, attachmentHost.email.id);
+	equal('exactly two attachment rows exist for the email', rowsForEmail.length, 2);
+	equal('filename is stored', rowsForEmail[0].filename, 'notes.txt');
+	equal('content type is stored', rowsForEmail[0].contentType, 'text/plain');
+	equal('size comes from the downloaded bytes', rowsForEmail[0].sizeBytes, 3);
+	equal(
+		'the R2 key is stored, not a URL',
+		rowsForEmail[0].r2ObjectKey,
+		`inbound/us-e05-${stamp}/att_ok-notes.txt`
+	);
+	check(
+		'a nameless attachment still gets a filename',
+		rowsForEmail.some((row) => row.filename === 'attachment-att_2')
+	);
+
+	// An upload that lands but whose row then fails to insert must not leave the
+	// object orphaned: nothing references it and the email's duplicate check
+	// means no redelivery ever repairs it. A bogus email id makes the insert
+	// fail on the `attachments.email_id` FK, after the upload has succeeded.
+	const orphanUploaded: string[] = [];
+	const orphanRemoved: string[] = [];
+	const orphanResult = await storeInboundAttachments(
+		db,
+		{
+			emailId: `no-such-email-${stamp}`,
+			resendEmailId: `us-e05-orphan-${stamp}`,
+			attachments: [meta('att_orphan', 'orphan.txt')]
+		},
+		{
+			download: async () => ({
+				bytes: new TextEncoder().encode('hi\n'),
+				contentType: 'text/plain'
+			}),
+			upload: async (key) => {
+				orphanUploaded.push(key);
+			},
+			remove: async (key) => {
+				orphanRemoved.push(key);
+			}
+		}
+	);
+
+	equal('a failed insert reports the attachment as failed', orphanResult.failed, ['att_orphan']);
+	equal('nothing is reported as stored', orphanResult.stored.length, 0);
+	equal('the orphaned object is deleted from R2', orphanRemoved, orphanUploaded);
 } finally {
 	if (storedMessageIds.length > 0) {
 		const doomed = await db
 			.select({ id: emails.id, threadId: emails.threadId })
 			.from(emails)
 			.where(inArray(emails.messageId, storedMessageIds));
+
+		// Children before parents: this connection is remote Turso, which *does*
+		// enforce the `attachments.email_id` FK, so deleting the emails first fails
+		// with SQLITE_CONSTRAINT out of `finally` and masks the run's results.
+		if (doomed.length > 0) {
+			await db.delete(attachmentsTable).where(
+				inArray(
+					attachmentsTable.emailId,
+					doomed.map((row) => row.id)
+				)
+			);
+		}
 		await db.delete(emails).where(inArray(emails.messageId, storedMessageIds));
 
 		// Only drop a thread that is now *empty*. A thread this run merely joined

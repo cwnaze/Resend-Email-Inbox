@@ -102,6 +102,49 @@ function isRetryableStatus(statusCode: number | null): boolean {
 	return statusCode < 400 || statusCode >= 500;
 }
 
+/**
+ * Downloads one inbound attachment's bytes (US-E05).
+ *
+ * Two hops, both required: the Attachments API returns a short-lived signed
+ * `download_url` (the content is never inlined — the same reason the webhook
+ * itself is metadata-only), and the bytes are then fetched from it. The URL is
+ * deliberately not returned to callers or persisted: it expires, and the app's
+ * own download links are presigned from R2 on demand (see `server/r2`).
+ *
+ * Throws a plain `Error` rather than a retryable-flagged one: the caller
+ * (`inbound/attachments.ts`) logs and omits a failed attachment instead of
+ * failing the ingestion, so there is no retry decision to inform.
+ */
+export async function fetchReceivedAttachmentBytes(
+	emailId: string,
+	attachmentId: string
+): Promise<{ bytes: Uint8Array; contentType: string | null }> {
+	const { data, error } = await getClient().emails.receiving.attachments.get({
+		emailId,
+		id: attachmentId
+	});
+	if (error || !data) {
+		console.error('Resend attachment fetch failed:', emailId, attachmentId, error);
+		throw new Error('Failed to fetch inbound attachment metadata');
+	}
+
+	const response = await fetch(data.download_url);
+	if (!response.ok) {
+		console.error(
+			'Resend attachment download failed:',
+			emailId,
+			attachmentId,
+			`status ${response.status}`
+		);
+		throw new Error('Failed to download inbound attachment');
+	}
+
+	return {
+		bytes: new Uint8Array(await response.arrayBuffer()),
+		contentType: data.content_type ?? null
+	};
+}
+
 export async function fetchReceivedEmail(
 	emailId: string
 ): Promise<GetReceivingEmailResponseSuccess> {

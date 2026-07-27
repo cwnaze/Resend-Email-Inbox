@@ -23,6 +23,9 @@
 - Idempotence on a natural key is worth enforcing twice: a cheap read up front so the happy path never creates dependent rows it has to undo, plus the unique index underneath as the authority for a genuine concurrent race (undo the dependent row when the index wins).
 - Sanitize untrusted markup on the write path, so the stored column carries the safety invariant and no renderer can forget to re-sanitize.
 - A showboat `exec` block that needs a running dev server plus a secret should be self-contained — export a throwaway secret inline, start the server with it in the environment, `trap`-kill on exit — so `showboat verify` doesn't depend on the gitignored `.env`.
+- Ingestion side effects that are *best-effort* (attachment download/upload) must be swallowed and logged, not thrown: the email row is already committed and the provider's redelivery short-circuits on the duplicate check, so a throw is an unrepairable retry loop.
+- Inject env-reading provider clients (Resend, R2) as a `deps` object into pure-ish server modules instead of importing them — that's what keeps those modules exercisable from a standalone `tsx` verification script with stubs.
+- Never let a sender-supplied filename decide an object-storage key or a path: derive the key from the provider's own id and use the filename only as a slugified, single-path-segment suffix.
 
 ## Progress Log
 
@@ -296,4 +299,14 @@
   - `threads.is_read` means "every message in the thread is read", so an arriving inbound message forces it back to false. `last_message_at` only moves forward, so a late redelivery of an old message can't reorder the inbox.
   - Never match the subject fallback on an empty normalized subject — every subject-less email would collapse into one thread.
   - The libSQL connection these verification scripts open **does** enforce foreign keys (contrary to the older CLAUDE.md note): deleting a `threads` row before its `emails` rows fails with SQLITE_CONSTRAINT.
+---
+
+## [2026-07-27] - US-E05
+- Implemented attachment extraction and R2 upload for inbound ingestion: each attachment on the fetched received-email record is downloaded via Resend's Attachments API (signed `download_url`, fetched, never persisted), uploaded to the private R2 bucket under `inbound/<resend_email_id>/<attachment_id>[-<slug>]`, and recorded as one `attachments` row (filename, content type, size from the actual bytes, R2 key). Failures are logged per attachment and omitted; the rest of the email is unaffected.
+- Files changed: `src/lib/server/inbound/attachments.ts` (new), `src/lib/server/db/attachments.ts` (new), `src/lib/server/email/resend.ts` (`fetchReceivedAttachmentBytes`), `src/routes/api/webhooks/resend-inbound/+server.ts` (wiring, attachment count in the log line), `src/lib/server/inbound/verify-inbound-parse.mts` (+21 checks, 118/118), `CLAUDE.md`, `docs/demos/US-E05.md`.
+- **Learnings for future iterations:**
+  - The Resend SDK exposes inbound attachment content as `resend.emails.receiving.attachments.get({ emailId, id })`, which returns metadata plus a short-lived signed `download_url` — the bytes are a second fetch. `InboundAttachment` (embedded in the received-email record) and `AttachmentData` (returned by the attachments endpoints) are different shapes; only the latter carries the URL.
+  - Attachments only run when `storeInboundEmail` reports `created` — a redelivery's bytes are already in R2 under the same deterministic key.
+  - Deleting inbound rows in a verification script now needs attachments → emails → threads ordering; the remote Turso connection enforces the FK.
+  - `no-control-regex` is enabled in this repo's eslint config, so a deliberate control-byte-stripping regex needs an inline disable with a reason.
 ---
