@@ -128,4 +128,4 @@
 
 ## Workflow
 
-- This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR, human merges.
+- This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR; the agent opens the PR, runs `/code-review` on it, fixes findings and re-reviews until a pass is clean, then squash-merges to `main` itself and moves to the next story.
