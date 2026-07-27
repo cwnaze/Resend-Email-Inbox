@@ -165,6 +165,31 @@ console.log('\nparseReceivedEmail — reply with no display name');
 		'<parent-1@example.com>'
 	]);
 	equal('cc trimmed, empties dropped', p.ccEmails, ['Cc.Person@Example.com']);
+}
+
+// Resend array-encodes a header that occurred more than once — observed on
+// `received`. If `References` ever arrives that way, whitespace-splitting the
+// raw string would yield JSON punctuation and poison US-E04 threading.
+console.log('\nparseReceivedEmail — JSON array-encoded headers');
+{
+	const p = parseReceivedEmail({
+		...replyDelivery,
+		headers: {
+			...replyDelivery.headers,
+			references: JSON.stringify(['<root-0@example.com> <parent-1@example.com>']),
+			'in-reply-to': JSON.stringify(['<parent-1@example.com>'])
+		}
+	} as GetReceivingEmailResponseSuccess);
+	equal('array-encoded References decoded, not split as JSON text', p.references, [
+		'<root-0@example.com>',
+		'<parent-1@example.com>'
+	]);
+	equal('array-encoded In-Reply-To takes the first value', p.inReplyTo, '<parent-1@example.com>');
+}
+
+console.log('\nparseReceivedEmail — reply, remaining fields');
+{
+	const p = parseReceivedEmail(replyDelivery);
 	equal('null html stays null', p.bodyHtml, null);
 	equal(
 		'unparseable Date: falls back to created_at',

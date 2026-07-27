@@ -70,17 +70,48 @@ export async function sendAuthCodeEmail(code: string) {
  * so `html`/`text`, the `From:` display name, `In-Reply-To` and the `Date:`
  * header are only available here. See `src/lib/server/inbound/parse.ts`.
  *
- * On failure the provider's message is logged server-side and a generic `Error`
- * is thrown, matching `sendAuthCodeEmail` — nothing Resend says reaches a
- * client through an unhandled-error page.
+ * On failure the provider's message is logged server-side and a generic
+ * `ReceivedEmailFetchError` is thrown, matching `sendAuthCodeEmail` — nothing
+ * Resend says reaches a client through an unhandled-error page. The error
+ * carries a `retryable` flag so the webhook endpoint can tell "try again later"
+ * (5xx / rate limit / unknown) apart from "this will never work" (a 4xx such as
+ * an `email_id` that no longer exists), which is the difference between a
+ * useful Resend redelivery and an infinite retry loop.
  */
+export class ReceivedEmailFetchError extends Error {
+	readonly retryable: boolean;
+	readonly statusCode: number | null;
+
+	constructor(retryable: boolean, statusCode: number | null) {
+		super('Failed to fetch received email');
+		this.name = 'ReceivedEmailFetchError';
+		this.retryable = retryable;
+		this.statusCode = statusCode;
+	}
+}
+
+/**
+ * A 4xx other than 429 means the request itself is wrong — a missing or
+ * inaccessible `email_id`, a revoked key — and repeating it verbatim cannot
+ * start working. Everything else (5xx, 429, and a null status, which is what a
+ * transport-level failure looks like) is worth another attempt.
+ */
+function isRetryableStatus(statusCode: number | null): boolean {
+	if (statusCode === null) return true;
+	if (statusCode === 429) return true;
+	return statusCode < 400 || statusCode >= 500;
+}
+
 export async function fetchReceivedEmail(
 	emailId: string
 ): Promise<GetReceivingEmailResponseSuccess> {
 	const { data, error } = await getClient().emails.receiving.get(emailId);
 	if (error || !data) {
 		console.error('Resend received-email fetch failed:', emailId, error);
-		throw new Error('Failed to fetch received email');
+		const statusCode = error?.statusCode ?? null;
+		// A success response with no payload is a contract violation, not a
+		// client error — treat it as retryable.
+		throw new ReceivedEmailFetchError(error ? isRetryableStatus(statusCode) : true, statusCode);
 	}
 	return data;
 }

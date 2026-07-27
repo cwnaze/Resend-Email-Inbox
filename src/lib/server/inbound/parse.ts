@@ -77,30 +77,46 @@ export function parseInboundWebhookEvent(payload: unknown): ParseEventResult {
 }
 
 /**
- * Reads a header case-insensitively.
+ * Reads every value of a header, case-insensitively.
  *
  * Resend lowercases header names, but it also hands some values back
  * *JSON-encoded* rather than raw — an observed real delivery had
  * `date: "\"2026-07-25T15:15:31.000Z\""` (a quoted string) and
- * `received: "[\" from …\"]"` (an array). So values are JSON-decoded when they
- * parse to a string, and left alone otherwise.
+ * `received: "[\"from …\"]"` (an array, which is how a header that occurred
+ * more than once comes back). So a `"`-prefixed value is decoded to a string
+ * and a `[`-prefixed one to a list; anything else is taken verbatim.
+ *
+ * Decoding the array form matters beyond `received`: a `References` header that
+ * arrived that way would otherwise be whitespace-split into JSON punctuation
+ * (`["<id1>",`) and silently poison threading rather than fail.
  */
-function header(headers: ReceivedEmailRecord['headers'], name: string): string | null {
-	if (!headers) return null;
+function headerValues(headers: ReceivedEmailRecord['headers'], name: string): string[] {
+	if (!headers) return [];
 	const raw = headers[name] ?? headers[name.toLowerCase()];
-	if (typeof raw !== 'string') return null;
+	if (typeof raw !== 'string') return [];
 
-	let value = raw.trim();
-	if (value.startsWith('"')) {
+	const value = raw.trim();
+	if (value.startsWith('"') || value.startsWith('[')) {
 		try {
 			const decoded: unknown = JSON.parse(value);
-			if (typeof decoded === 'string') value = decoded.trim();
+			if (typeof decoded === 'string') return [decoded.trim()].filter((v) => v !== '');
+			if (Array.isArray(decoded)) {
+				return decoded
+					.filter((entry): entry is string => typeof entry === 'string')
+					.map((entry) => entry.trim())
+					.filter((entry) => entry !== '');
+			}
 		} catch {
 			// Not JSON — a header value that merely starts with a quote, e.g. a
 			// display name like `"Google" <noreply@google.com>`. Keep it verbatim.
 		}
 	}
-	return value === '' ? null : value;
+	return value === '' ? [] : [value];
+}
+
+/** The single value of a header — the first, when it occurred more than once. */
+function header(headers: ReceivedEmailRecord['headers'], name: string): string | null {
+	return headerValues(headers, name)[0] ?? null;
 }
 
 /**
@@ -125,10 +141,13 @@ function parseDisplayName(fromHeader: string | null): string | null {
 	return name === '' ? null : name;
 }
 
-/** `References` is a whitespace-separated list of message ids. */
-function parseReferences(value: string | null): string[] {
-	if (!value) return [];
-	return value.split(/\s+/).filter((ref) => ref !== '');
+/**
+ * `References` is a whitespace-separated list of message ids. It takes *all*
+ * values rather than just the first: a header that occurred more than once
+ * comes back as a list, and the ids from each occurrence are all references.
+ */
+function parseReferences(values: string[]): string[] {
+	return values.flatMap((value) => value.split(/\s+/)).filter((ref) => ref !== '');
 }
 
 function parseDate(value: string | null, fallback: string): Date {
@@ -159,7 +178,7 @@ export function parseReceivedEmail(received: ReceivedEmailRecord): ParsedInbound
 		resendEmailId: received.id,
 		messageId: received.message_id,
 		inReplyTo: header(received.headers, 'in-reply-to'),
-		references: parseReferences(header(received.headers, 'references')),
+		references: parseReferences(headerValues(received.headers, 'references')),
 		fromEmail,
 		fromName: parseDisplayName(header(received.headers, 'from')),
 		toEmails: addressList(received.to),

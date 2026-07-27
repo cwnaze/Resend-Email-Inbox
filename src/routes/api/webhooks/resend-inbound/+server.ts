@@ -12,7 +12,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { verifySvixRequest } from '$lib/server/webhooks/svix';
 import { parseInboundWebhookEvent, parseReceivedEmail } from '$lib/server/inbound/parse';
-import { fetchReceivedEmail } from '$lib/server/email/resend';
+import { fetchReceivedEmail, ReceivedEmailFetchError } from '$lib/server/email/resend';
 import { upsertContactFromInbound } from '$lib/server/db/contacts';
 import { db } from '$lib/server/db';
 
@@ -36,9 +36,23 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	// The webhook is metadata-only — body, headers and attachments must be
-	// fetched. A throw here surfaces as a 500, which is what we want: Resend
-	// retries 5xx, and a transient API failure should not silently drop mail.
-	const received = await fetchReceivedEmail(event.emailId);
+	// fetched. A *transient* failure is allowed to throw → 500, which is exactly
+	// when Resend's retry helps. A permanent one (4xx: the `email_id` is gone or
+	// inaccessible) must answer 200 for the same reason an unusable payload does
+	// — redelivering it forever cannot make it succeed.
+	let received;
+	try {
+		received = await fetchReceivedEmail(event.emailId);
+	} catch (err) {
+		if (err instanceof ReceivedEmailFetchError && !err.retryable) {
+			console.warn(
+				`ignoring inbound webhook: received-email fetch failed permanently`,
+				`(${event.emailId}, status ${err.statusCode})`
+			);
+			return json({ ok: true, ignored: true });
+		}
+		throw err;
+	}
 	const parsed = parseReceivedEmail(received);
 
 	const { contact, created } = await upsertContactFromInbound(db, {
@@ -46,8 +60,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		name: parsed.fromName
 	});
 
+	// Deliberately no sender address in the log line: it would put a real
+	// person's email address in the platform's function logs on every delivery,
+	// and the contact id already identifies the row if it needs looking up.
 	console.log(
-		`inbound email ${parsed.resendEmailId} from ${parsed.fromEmail}`,
+		`inbound email ${parsed.resendEmailId}`,
 		`(contact ${contact.id} ${created ? 'created' : 'existing'})`
 	);
 

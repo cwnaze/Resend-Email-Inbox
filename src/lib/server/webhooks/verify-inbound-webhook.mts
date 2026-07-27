@@ -179,6 +179,19 @@ if (!apiKey || !tursoUrl || !tursoToken) {
 			body: otherBody
 		});
 
+		// A verified envelope naming an `email_id` Resend will never serve (a 4xx
+		// from the Received-emails API) must be *ignored* with a 200, not 500'd:
+		// Resend retries 5xx, and no number of retries can make a missing email
+		// appear. Only a transient failure is allowed to reach a 500.
+		const missingBody = JSON.stringify({
+			type: 'email.received',
+			data: { email_id: '00000000-0000-4000-8000-000000000000' }
+		});
+		await check('permanently-unfetchable email_id is ignored, not retried', 200, {
+			headers: sign(missingBody, 'msg_us_e02_missing', new Date()),
+			body: missingBody
+		});
+
 		turso.close();
 	}
 }
