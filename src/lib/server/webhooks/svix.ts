@@ -58,10 +58,16 @@ export async function verifySvixRequest(request: Request): Promise<VerifyResult>
 		headers[name] = value;
 	}
 
+	// Resolved *outside* the try below: a missing secret is a server
+	// misconfiguration, not a bad caller. Letting it throw surfaces a 500 (which
+	// Resend retries) instead of a 401 that would silently drop every inbound
+	// email while looking like an attacker probing the endpoint.
+	const wh = getWebhook();
+
 	const rawBody = await request.text();
 
 	try {
-		const payload = getWebhook().verify(rawBody, headers);
+		const payload = wh.verify(rawBody, headers);
 		return { ok: true, payload, rawBody };
 	} catch (err) {
 		return {
