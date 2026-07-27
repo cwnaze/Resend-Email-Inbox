@@ -19,7 +19,7 @@
 //     invalidates the code (US-B03) — that threshold check lives in the
 //     verify-code endpoint itself, this module just persists the count.
 import { createHash } from 'node:crypto';
-import { and, count, desc, eq, gt, gte, isNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, gte, isNull, min, sql } from 'drizzle-orm';
 import { authCodes } from '../db/schema';
 import type { Database } from '../db/types';
 
@@ -124,19 +124,33 @@ export async function markAuthCodeUsed(database: Database, id: string, usedAt: D
 }
 
 /**
- * Counts how many auth_codes rows were created at/after `windowStart` —
- * i.e. how many code *requests* have happened in the rolling window,
- * regardless of whether that code has since been used/invalidated/expired.
- * Used by US-B02 to enforce "no more than 3 requests per 10-minute rolling
- * window" — a request that gets rate-limited must not insert a row, so this
- * count reflects only genuine requests.
+ * Rate-limit window stats for `auth_codes`: how many rows were created at/after
+ * `windowStart`, and the `createdAt` of the oldest one (or `null` if none).
+ *
+ * The count is "how many code *requests* happened in the rolling window",
+ * regardless of whether those codes have since been used/superseded/expired —
+ * a rate-limited request must not insert a row, so it reflects only genuine
+ * requests. The oldest timestamp is the one that will next age out of the
+ * window, which is what a "try again in N minutes" message and the
+ * `Retry-After` header are measured from (US-B04).
+ *
+ * Both come back from a single aggregate so the throttled path costs one round
+ * trip rather than two, and so the two numbers can't be read from different
+ * moments.
  */
-export async function countAuthCodeRequestsSince(database: Database, windowStart: Date) {
+export async function getAuthCodeRequestWindow(database: Database, windowStart: Date) {
 	const rows = await database
-		.select({ value: count() })
+		.select({ value: count(), oldest: min(authCodes.createdAt) })
 		.from(authCodes)
 		.where(gte(authCodes.createdAt, windowStart));
-	return rows[0]?.value ?? 0;
+	const row = rows[0];
+	return {
+		count: row?.value ?? 0,
+		// drizzle's `timestamp_ms` mapping applies to selected columns, not to
+		// aggregate expressions over them, so SQLite's `min()` comes back as a raw
+		// number — rewrap it.
+		oldestCreatedAt: row?.oldest != null ? new Date(Number(row.oldest)) : null
+	};
 }
 
 /**

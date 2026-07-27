@@ -8,9 +8,9 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import {
-	countAuthCodeRequestsSince,
 	createAuthCode,
 	deleteAuthCode,
+	getAuthCodeRequestWindow,
 	hashAuthCode,
 	invalidateActiveAuthCodes
 } from '$lib/server/auth/auth-codes';
@@ -29,16 +29,27 @@ export const POST: RequestHandler = async () => {
 	const now = new Date();
 	const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS);
 
-	const recentRequestCount = await countAuthCodeRequestsSince(db, windowStart);
+	// One aggregate query gives both the window count and the oldest request in
+	// it — the oldest is the next to age out, so it's what "try again in N" is
+	// measured from.
+	const { count: recentRequestCount, oldestCreatedAt } = await getAuthCodeRequestWindow(
+		db,
+		windowStart
+	);
 	if (recentRequestCount >= RATE_LIMIT_MAX_REQUESTS) {
+		const retryAtMs = (oldestCreatedAt?.getTime() ?? now.getTime()) + RATE_LIMIT_WINDOW_MS;
+		const retryAfterSeconds = Math.max(1, Math.ceil((retryAtMs - now.getTime()) / 1000));
 		return json(
-			{ error: 'Too many code requests. Please try again later.' },
+			{
+				error: 'Too many code requests. Please try again later.',
+				retryAfterMinutes: Math.max(1, Math.ceil(retryAfterSeconds / 60))
+			},
 			{
 				status: 429,
-				// Standard signal for any client that isn't our own UI. The window is
-				// rolling, so this is the worst case (a slot frees up sooner if the
-				// earliest request in the window is older than "just now").
-				headers: { 'Retry-After': String(RATE_LIMIT_WINDOW_MS / 1000) }
+				// Standard signal for any client that isn't our own UI. Derived from the
+				// same oldest-request timestamp as retryAfterMinutes, so the header and
+				// the body can't disagree.
+				headers: { 'Retry-After': String(retryAfterSeconds) }
 			}
 		);
 	}

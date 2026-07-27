@@ -23,7 +23,7 @@ import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import * as schema from '../db/schema.ts';
 import {
-	countAuthCodeRequestsSince,
+	getAuthCodeRequestWindow,
 	createAuthCode,
 	hashAuthCode,
 	invalidateActiveAuthCodes
@@ -82,7 +82,7 @@ async function main() {
 	// Scoped to rows *this run* creates: this points at the shared live Turso DB,
 	// so a legitimate code request in the preceding 10 minutes would otherwise
 	// fail the script for a reason that isn't a bug.
-	const before = await countAuthCodeRequestsSince(db, windowStart);
+	const { count: before } = await getAuthCodeRequestWindow(db, windowStart);
 
 	for (let i = 0; i < 3; i++) {
 		await invalidateActiveAuthCodes(db, now);
@@ -93,11 +93,17 @@ async function main() {
 		);
 		createdIds.push(row.id);
 	}
-	const afterThree = await countAuthCodeRequestsSince(db, windowStart);
+	const { count: afterThree, oldestCreatedAt } = await getAuthCodeRequestWindow(db, windowStart);
 	assert(afterThree - before === 3, 'exactly 3 additional requests are counted after 3 creates');
 
 	const wouldBeBlocked = afterThree - before >= 3;
 	assert(wouldBeBlocked, 'a 4th request in the same window would be rejected (count >= 3)');
+	// The oldest request in the window is what the 429's Retry-After and
+	// "try again in N minutes" are measured from (US-B04).
+	assert(
+		oldestCreatedAt instanceof Date && oldestCreatedAt.getTime() >= windowStart.getTime(),
+		'the window aggregate returns the oldest request timestamp as a Date inside the window'
+	);
 
 	console.log('3. Invalidation (only one active code at a time):');
 	const rows = await db.query.authCodes.findMany({
@@ -121,7 +127,7 @@ async function main() {
 	for (const id of createdIds) {
 		await client.execute({ sql: 'delete from auth_codes where id = ?', args: [id] });
 	}
-	const afterCleanup = await countAuthCodeRequestsSince(db, windowStart);
+	const { count: afterCleanup } = await getAuthCodeRequestWindow(db, windowStart);
 	assert(afterCleanup === before, 'all test rows were cleaned up (window count back to baseline)');
 
 	console.log(`\n${passed} passed, ${failed} failed`);
