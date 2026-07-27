@@ -19,6 +19,8 @@
 - Status codes at a webhook endpoint encode retry semantics: `200` for verified-but-unusable payloads (nothing to retry), `5xx` only for transient failures (fetch/DB). Inverting them either loses mail silently or creates an infinite redelivery loop.
 - For an idempotent upsert under concurrent redelivery, `insert(...).onConflictDoNothing().returning()` + a re-read on the empty result is the pattern — a bare insert turns a lost race into a 500, which the provider then retries forever.
 - Normalize the case of any value covered by a SQLite unique index at the write boundary (SQLite's `unique` is case-sensitive); compare with `lower()` on reads so rows written before the normalization existed still match.
+- Idempotence on a natural key is worth enforcing twice: a cheap read up front so the happy path never creates dependent rows it has to undo, plus the unique index underneath as the authority for a genuine concurrent race (undo the dependent row when the index wins).
+- Sanitize untrusted markup on the write path, so the stored column carries the safety invariant and no renderer can forget to re-sanitize.
 - A showboat `exec` block that needs a running dev server plus a secret should be self-contained — export a throwaway secret inline, start the server with it in the environment, `trap`-kill on exit — so `showboat verify` doesn't depend on the gitignored `.env`.
 
 ## Progress Log
@@ -264,4 +266,19 @@
   - Read the bare address from the field the provider validated, and the display name from the header. Trusting the header for both lets a crafted `From:` disagree with the envelope.
   - Webhook status codes are retry instructions: `200` for verified-but-unusable, `5xx` only for transient. `console.warn` the reason either way.
   - This story's real end-to-end run created a genuine `contacts` row (`no-reply@accounts.google.com`) in the live DB from an actual inbound email — it was left in place rather than cleaned up, since it is real data the app should have. Expect it when US-F01/US-I01 first render lists.
+---
+
+## [2026-07-27] - US-E03
+- Sanitized inbound HTML and stored the email row, idempotently on `message_id`.
+- Added `src/lib/server/inbound/sanitize.ts`: `sanitizeEmailHtml`, built on `isomorphic-dompurify` (new dependency), with an explicit `FORBID_TAGS`/`FORBID_ATTR` list layered on DOMPurify's defaults (script/iframe/frame/object/embed/link/base/meta/form/input/button/textarea/select/option/style/svg/math; srcset/background/ping/style/formaction/action), `ALLOW_DATA_ATTR: false`. Blank or entirely-malicious input sanitizes to `null` rather than `''`.
+- Added `src/lib/server/db/emails.ts`: `getEmailByMessageId`, `insertInboundEmail` (idempotent via `onConflictDoNothing()` + re-read), `createThread`, `deleteThread`. Db-handle-first, same shape as `contacts.ts`.
+- Added `src/lib/server/inbound/store.ts`: `storeInboundEmail(db, parsed)` — duplicate read, thread create, sanitize, insert; deletes the just-created thread if the insert lost the race. Each new email starts its own thread for now; US-E04 replaces only that choice.
+- Wired it into `POST /api/webhooks/resend-inbound` after the contact upsert; response is now `{ ok: true, duplicate }` and the log line reports the email id + stored/duplicate (still no sender address).
+- Extended `src/lib/server/inbound/verify-inbound-parse.mts` (28 -> 72 checks) with a sanitizer fixture section and a live-Turso `storeInboundEmail` section (redelivery, no orphan thread), cleaning up its email/thread rows in the `finally` block. Extended `src/lib/server/webhooks/verify-inbound-webhook.mts` (12 -> 14 checks) to assert the real received email is stored exactly once and its stored `body_html` has no script/handler/iframe markup.
+- Verified: 72/72 parse+sanitize+store checks, 14/14 endpoint checks against a running dev server and the real Resend account (the surviving tag set of a real marketing HTML email is `a,br,div,img,table,tbody,td,tr` — no `style`/`link`/`script`). `npm run check` 0 errors, `npm run lint` clean, `npm run build` succeeds. `showboat verify docs/demos/US-E03.md` exits 0.
+- Files changed: package.json, package-lock.json, src/lib/server/inbound/sanitize.ts (new), src/lib/server/inbound/store.ts (new), src/lib/server/db/emails.ts (new), src/lib/server/inbound/verify-inbound-parse.mts, src/lib/server/webhooks/verify-inbound-webhook.mts, src/routes/api/webhooks/resend-inbound/+server.ts, CLAUDE.md, docs/demos/US-E03.md (new), agents/prd.json, agents/progress.txt.
+- **Learnings for future iterations:**
+  - Sanitize on the *write* path, not at render: one call site is auditable, and no future renderer can forget. The column then carries a real invariant.
+  - A demo doc that reads a real inbound email out of the DB must print structural facts only (tag set, booleans, lengths) — never the address or body — or the proof-of-work log becomes a PII leak.
+  - A one-off `tsx` script for a showboat block must live inside the repo (e.g. `src/lib/server/db/_demo-row.mts`, removed at the end of the block), not `/tmp`: from `/tmp` it cannot resolve `node_modules`.
 ---
