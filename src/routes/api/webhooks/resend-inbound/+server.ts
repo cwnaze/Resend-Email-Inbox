@@ -1,4 +1,4 @@
-// POST /api/webhooks/resend-inbound (US-E01, US-E02)
+// POST /api/webhooks/resend-inbound (US-E01..E04)
 //
 // Resend delivers inbound mail here. Every request is Svix-verified against the
 // raw body *before* anything is parsed or persisted (FR-1,
@@ -6,8 +6,8 @@
 //
 // US-E01 built the verification gate. US-E02 added parsing and the sender
 // contact upsert. US-E03 adds HTML sanitization + the idempotent `emails`
-// insert (`storeInboundEmail`). Thread assignment (US-E04) and attachment
-// upload (US-E05) hang off the same `parsed` object below.
+// insert (`storeInboundEmail`), and US-E04 thread assignment inside it too.
+// Attachment upload (US-E05) hangs off the same `parsed` object below.
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { verifySvixRequest } from '$lib/server/webhooks/svix';
@@ -64,15 +64,15 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Deliberately no sender address in the log line: it would put a real
 	// person's email address in the platform's function logs on every delivery,
 	// and the contact id already identifies the row if it needs looking up.
-	const { email, created: emailCreated } = await storeInboundEmail(db, parsed);
+	const { email, created: emailCreated, threadMatch } = await storeInboundEmail(db, parsed);
 
 	console.log(
 		`inbound email ${parsed.resendEmailId}`,
 		`(contact ${contact.id} ${created ? 'created' : 'existing'};`,
-		`email ${email.id} ${emailCreated ? 'stored' : 'duplicate, skipped'})`
+		`email ${email.id} ${emailCreated ? 'stored' : 'duplicate, skipped'};`,
+		`thread ${email.threadId} ${threadMatch})`
 	);
 
-	// US-E04 replaces the thread assignment inside `storeInboundEmail`; US-E05
-	// hangs attachment upload off `parsed.attachments` + `email.id` here.
+	// US-E05 hangs attachment upload off `parsed.attachments` + `email.id` here.
 	return json({ ok: true, duplicate: !emailCreated });
 };

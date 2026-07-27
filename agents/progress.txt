@@ -3,6 +3,7 @@
 - `@sveltejs/adapter-vercel` runtime auto-detection rejects Node versions outside 20/22/24; pass an explicit `runtime` (e.g. `'nodejs22.x'`) to the adapter if the build/dev machine runs a newer Node.
 - `.prettierignore` excludes `/tasks/`, `/agents/`, and `/docs/demos/` (PRDs, agent process files, and showboat demo logs) from the app's lint/format scope.
 - When writing showboat `exec` blocks meant to be reproducible via `showboat verify`, strip timestamps/durations/PIDs from captured command output (grep/sed) before showboat records it.
+- A verification script that writes rows to the live DB must delete its own prior-run rows *before* asserting, not only after: otherwise idempotent ingestion answers the first call as a duplicate and every assertion silently describes what an older run wrote. Delete children before parents — the libSQL connection these scripts open does enforce the FKs.
 - Real secrets (Turso URL/token, etc.) live only in the gitignored root `.env`; `.env.example` tracks variable names with empty values. Never let `showboat exec` capture raw `.env` contents or a connection string into a committed demo doc — pipe drizzle-kit/db output through `grep -v`/`sed` to redact if needed, and grep the demo file for secret-shaped strings before committing.
 - Drizzle/Turso: `db` client lives at `src/lib/server/db/index.ts` (server-only import), schema at `src/lib/server/db/schema.ts`, config at root `drizzle.config.ts` (`dialect: 'turso'`). `npm run db:push` applies schema directly (no migration files generated); use `npm run db:generate` if versioned SQL migrations are ever needed.
 - R2/Cloudflare object storage is private in this project — no `R2_PUBLIC_URL_BASE`/custom domain. Any story that needs to let the browser fetch/download an R2 object must call `getR2SignedDownloadUrl` (in `src/lib/server/r2/index.ts`) on demand; never assume a stored permanent public URL exists. `tasks/*.md` and `agents/prd.json` wording has been updated repo-wide to say "presigned URL" instead of "public URL" for attachments.
@@ -281,4 +282,18 @@
   - Sanitize on the *write* path, not at render: one call site is auditable, and no future renderer can forget. The column then carries a real invariant.
   - A demo doc that reads a real inbound email out of the DB must print structural facts only (tag set, booleans, lengths) — never the address or body — or the proof-of-work log becomes a PII leak.
   - A one-off `tsx` script for a showboat block must live inside the repo (e.g. `src/lib/server/db/_demo-row.mts`, removed at the end of the block), not `/tmp`: from `/tmp` it cannot resolve `node_modules`.
+---
+
+## 2026-07-27 - US-E04 (Thread assignment)
+- Replies are now grouped into their originating conversation instead of each inbound email starting its own thread.
+  - `src/lib/server/inbound/threading.ts` (new): `normalizeSubject` (strips stacked `Re:`/`Fwd:`/localized prefixes incl. `Re[2]:`, collapses whitespace, lowercases) and `SUBJECT_THREAD_WINDOW_MS` (30 days, FR-4).
+  - `src/lib/server/db/emails.ts`: `findThreadIdByMessageIds`, `findThreadBySubject`, `touchThreadForNewMessage`.
+  - `src/lib/server/inbound/store.ts`: `assignThread` — In-Reply-To, then the References chain nearest-ancestor-first, then the 30-day normalized-subject fallback, then a new thread. `storeInboundEmail` now returns `threadMatch` and takes an injectable `now`.
+  - `src/routes/api/webhooks/resend-inbound/+server.ts`: log line reports the thread id and how it was matched.
+  - Verification: `verify-inbound-parse.mts` 95/95 (pure subject cases + live-DB threading), `verify-inbound-webhook.mts` 14/14 end-to-end against a real received email.
+- **Learnings for future iterations:**
+  - `threads.subject` stores the **normalized** subject; `emails.subject` keeps the sender's original wording. Anything rendering a thread header should expect a lowercased, prefix-stripped string — US-F01 may want to display the newest email's subject instead.
+  - `threads.is_read` means "every message in the thread is read", so an arriving inbound message forces it back to false. `last_message_at` only moves forward, so a late redelivery of an old message can't reorder the inbox.
+  - Never match the subject fallback on an empty normalized subject — every subject-less email would collapse into one thread.
+  - The libSQL connection these verification scripts open **does** enforce foreign keys (contrary to the older CLAUDE.md note): deleting a `threads` row before its `emails` rows fails with SQLITE_CONSTRAINT.
 ---

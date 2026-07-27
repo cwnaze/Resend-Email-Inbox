@@ -1,4 +1,6 @@
-// Standalone smoke test for US-E02: inbound payload parsing + contact upsert.
+// Standalone smoke test for inbound ingestion: payload parsing + contact upsert
+// (US-E02), HTML sanitization + idempotent storage (US-E03), thread assignment
+// (US-E04).
 //
 // Run with:
 //   node --env-file=.env node_modules/.bin/tsx src/lib/server/inbound/verify-inbound-parse.mts
@@ -24,6 +26,7 @@ import { getContactByEmail, normalizeEmail, upsertContactFromInbound } from '../
 import { parseInboundWebhookEvent, parseReceivedEmail } from './parse.js';
 import { sanitizeEmailHtml } from './sanitize.js';
 import { storeInboundEmail } from './store.js';
+import { normalizeSubject } from './threading.js';
 import { emails, threads } from '../db/schema.js';
 
 let failures = 0;
@@ -141,6 +144,26 @@ console.log('\nparseReceivedEmail — real delivery');
 {
 	const p = parseReceivedEmail(realDelivery);
 	equal('message_id', p.messageId, '<abc-123@example.com>');
+
+	// Message-ID is optional in RFC 5322 and unvalidated by Resend, but it is the
+	// app's idempotence key — an empty one would make every subsequent such email
+	// look like a duplicate of the first and be dropped with a 200.
+	for (const [label, value] of [
+		['absent', undefined],
+		['null', null],
+		['empty', ''],
+		['whitespace-only', '   ']
+	] as const) {
+		const fallback = parseReceivedEmail({
+			...realDelivery,
+			message_id: value
+		} as unknown as GetReceivingEmailResponseSuccess);
+		equal(
+			`a ${label} message_id falls back to the Resend email id`,
+			fallback.messageId,
+			`<resend-${realDelivery.id}@inbound.invalid>`
+		);
+	}
 	equal('from address is lowercased from Resend`s own field', p.fromEmail, 'sender@example.com');
 	equal('display name unquoted from the From: header', p.fromName, 'Example Sender');
 	equal('to', p.toEmails, ['owner@example.com']);
@@ -199,6 +222,21 @@ console.log('\nparseReceivedEmail — reply, remaining fields');
 		p.receivedAt.toISOString(),
 		'2026-07-25T15:15:33.224Z'
 	);
+}
+
+console.log('\nnormalizeSubject (US-E04)');
+{
+	equal('plain subject lowercased', normalizeSubject('Quarterly Report'), 'quarterly report');
+	equal('Re: stripped', normalizeSubject('Re: Quarterly Report'), 'quarterly report');
+	equal('stacked prefixes stripped', normalizeSubject('Re: Fwd: RE: Report'), 'report');
+	equal('counted prefix stripped', normalizeSubject('Re[2]: Report'), 'report');
+	equal(
+		'whitespace collapsed',
+		normalizeSubject('  RE:   Quarterly   Report '),
+		'quarterly report'
+	);
+	equal('empty subject stays empty', normalizeSubject('   '), '');
+	equal('a colon inside the subject survives', normalizeSubject('Status: green'), 'status: green');
 }
 
 // ---------------------------------------------------------------------------
@@ -326,8 +364,14 @@ try {
 	// -------------------------------------------------------------------------
 	console.log('\nstoreInboundEmail — live DB');
 
+	// The subject is overridden with a per-run unique one on purpose. Keeping
+	// `realDelivery.subject` would let this row subject-match (US-E04's 30-day
+	// fallback) onto the thread `verify-inbound-webhook.mts` creates from the
+	// same real email in this same live DB — making `threadMatch` depend on
+	// which script ran last, and pointing cleanup at a thread holding real rows.
 	const parsed = parseReceivedEmail({
 		...realDelivery,
+		subject: `US-E03 store fixture ${stamp}`,
 		message_id: `<us-e03-${stamp}@example.com>`,
 		headers: {
 			...realDelivery.headers,
@@ -350,13 +394,17 @@ try {
 		stored.email.receivedAt.toISOString(),
 		'2026-07-25T15:15:31.000Z'
 	);
-	check('a thread was created for it', typeof stored.email.threadId === 'string');
+	equal('a thread was created for it', stored.threadMatch, 'new');
 
 	const { rows: threadRowsBefore } = await client.execute({
-		sql: 'select count(*) as n from threads where id = ?',
+		sql: 'select subject from threads where id = ?',
 		args: [stored.email.threadId]
 	});
-	equal('exactly one thread row', Number(threadRowsBefore[0].n), 1);
+	equal(
+		'the thread stores the normalized subject',
+		threadRowsBefore[0]?.subject,
+		`us-e03 store fixture ${stamp}`.toLowerCase()
+	);
 
 	// A redelivery of the same message_id must be a no-op, not a 500 — and must
 	// not leave an orphan thread behind either, so the whole-table count is what
@@ -375,6 +423,155 @@ try {
 	equal('still exactly one email row', Number(emailRows[0].n), 1);
 
 	equal('the duplicate left no orphan thread', await threadCount(), threadsBeforeReplay);
+
+	// -------------------------------------------------------------------------
+	// Part 5 — thread assignment (US-E04, live DB)
+	// -------------------------------------------------------------------------
+	console.log('\nstoreInboundEmail — thread assignment');
+
+	const now = new Date('2026-07-25T16:00:00.000Z');
+	/** Builds a parsed inbound email with the fields threading cares about. */
+	const inbound = (over: {
+		id: string;
+		subject: string;
+		date: string;
+		inReplyTo?: string;
+		references?: string;
+	}) =>
+		parseReceivedEmail({
+			...realDelivery,
+			message_id: `<${over.id}@example.com>`,
+			subject: over.subject,
+			headers: {
+				...realDelivery.headers,
+				'message-id': `<${over.id}@example.com>`,
+				date: JSON.stringify(over.date),
+				...(over.inReplyTo ? { 'in-reply-to': over.inReplyTo } : {}),
+				...(over.references ? { references: over.references } : {})
+			}
+		} as GetReceivingEmailResponseSuccess);
+
+	const store = async (record: ReturnType<typeof inbound>) => {
+		const result = await storeInboundEmail(db, record, now);
+		storedMessageIds.push(record.messageId);
+		return result;
+	};
+
+	const root = await store(
+		inbound({
+			id: `us-e04-root-${stamp}`,
+			subject: 'Quarterly Report',
+			date: '2026-07-25T10:00:00.000Z'
+		})
+	);
+	equal('a fresh conversation starts a new thread', root.threadMatch, 'new');
+
+	const [rootThread] = await db
+		.select()
+		.from(threads)
+		.where(inArray(threads.id, [root.email.threadId]));
+	equal('the thread stores the normalized subject', rootThread.subject, 'quarterly report');
+	equal('a new unread message leaves the thread unread', rootThread.isRead, false);
+
+	// Mark it read, so the next arrival has something to flip back.
+	await client.execute({
+		sql: 'update threads set is_read = 1 where id = ?',
+		args: [root.email.threadId]
+	});
+
+	const reply = await store(
+		inbound({
+			id: `us-e04-reply-${stamp}`,
+			subject: 'Re: Quarterly Report',
+			date: '2026-07-25T11:00:00.000Z',
+			inReplyTo: `<us-e04-root-${stamp}@example.com>`
+		})
+	);
+	equal('In-Reply-To matches an existing message_id', reply.threadMatch, 'reply');
+	equal('the reply joins the parent thread', reply.email.threadId, root.email.threadId);
+
+	const [afterReply] = await db
+		.select()
+		.from(threads)
+		.where(inArray(threads.id, [root.email.threadId]));
+	equal('a new message makes a read thread unread again', afterReply.isRead, false);
+	equal(
+		'last_message_at moved to the reply',
+		afterReply.lastMessageAt.toISOString(),
+		'2026-07-25T11:00:00.000Z'
+	);
+
+	// A reply whose direct parent this mailbox never saw still threads off the
+	// References chain.
+	const viaReferences = await store(
+		inbound({
+			id: `us-e04-refs-${stamp}`,
+			subject: 'Re: Quarterly Report',
+			date: '2026-07-25T12:00:00.000Z',
+			inReplyTo: `<us-e04-unknown-${stamp}@example.com>`,
+			references: `<us-e04-root-${stamp}@example.com> <us-e04-unknown-${stamp}@example.com>`
+		})
+	);
+	equal('an unknown parent falls through to References', viaReferences.threadMatch, 'reply');
+	equal(
+		'References threading picks the same thread',
+		viaReferences.email.threadId,
+		root.email.threadId
+	);
+
+	// No headers at all: FR-4's 30-day same-normalized-subject fallback.
+	const bySubject = await store(
+		inbound({
+			id: `us-e04-subject-${stamp}`,
+			subject: 'RE:   Quarterly Report',
+			date: '2026-07-25T13:00:00.000Z'
+		})
+	);
+	equal('headerless same-subject mail falls back to subject', bySubject.threadMatch, 'subject');
+	equal('subject fallback picks the same thread', bySubject.email.threadId, root.email.threadId);
+
+	// An older message arriving late must not drag the thread's sort key back.
+	await store(
+		inbound({
+			id: `us-e04-late-${stamp}`,
+			subject: 'Re: Quarterly Report',
+			date: '2026-07-20T09:00:00.000Z',
+			inReplyTo: `<us-e04-root-${stamp}@example.com>`
+		})
+	);
+	const [afterLate] = await db
+		.select()
+		.from(threads)
+		.where(inArray(threads.id, [root.email.threadId]));
+	equal(
+		'a late older message does not move last_message_at back',
+		afterLate.lastMessageAt.toISOString(),
+		'2026-07-25T13:00:00.000Z'
+	);
+
+	// Outside the 30-day window, the same subject starts a fresh conversation.
+	const stale = await storeInboundEmail(
+		db,
+		inbound({
+			id: `us-e04-stale-${stamp}`,
+			subject: 'Quarterly Report',
+			date: '2026-09-30T10:00:00.000Z'
+		}),
+		new Date('2026-09-30T10:00:00.000Z')
+	);
+	storedMessageIds.push(`<us-e04-stale-${stamp}@example.com>`);
+	equal('the same subject 60+ days later is a new thread', stale.threadMatch, 'new');
+	check('and it is genuinely a different thread', stale.email.threadId !== root.email.threadId);
+
+	const unrelated = await store(
+		inbound({
+			id: `us-e04-other-${stamp}`,
+			subject: 'Something else entirely',
+			date: '2026-07-25T14:00:00.000Z'
+		})
+	);
+	equal('an unrelated subject starts its own thread', unrelated.threadMatch, 'new');
+	check('unrelated mail is not merged', unrelated.email.threadId !== root.email.threadId);
 } finally {
 	if (storedMessageIds.length > 0) {
 		const doomed = await db
@@ -382,12 +579,23 @@ try {
 			.from(emails)
 			.where(inArray(emails.messageId, storedMessageIds));
 		await db.delete(emails).where(inArray(emails.messageId, storedMessageIds));
-		const threadIds = doomed.map((row) => row.threadId);
-		if (threadIds.length > 0) {
-			await db.delete(threads).where(inArray(threads.id, threadIds));
+
+		// Only drop a thread that is now *empty*. A thread this run merely joined
+		// may still hold rows it did not create — including real user mail — and
+		// deleting it would either throw SQLITE_CONSTRAINT out of `finally` (the
+		// remote Turso connection enforces FKs) and mask the run's results, or,
+		// worse, destroy genuine data. Same guard the sibling webhook script uses.
+		const threadIds = [...new Set(doomed.map((row) => row.threadId))];
+		let removedThreads = 0;
+		for (const threadId of threadIds) {
+			const { rowsAffected } = await client.execute({
+				sql: 'delete from threads where id = ? and not exists (select 1 from emails where thread_id = ?)',
+				args: [threadId, threadId]
+			});
+			removedThreads += Number(rowsAffected);
 		}
 		console.log(
-			`cleanup: ${doomed.length} email row(s) and ${threadIds.length} thread row(s) removed`
+			`cleanup: ${doomed.length} email row(s) and ${removedThreads} thread row(s) removed`
 		);
 	}
 

@@ -13,6 +13,7 @@
 //
 // with a dev server already listening on BASE_URL (override via WEBHOOK_BASE_URL).
 import { Webhook } from 'svix';
+import { normalizeSubject } from '../inbound/threading.js';
 
 const baseUrl = process.env.WEBHOOK_BASE_URL ?? 'http://localhost:5173';
 const endpoint = `${baseUrl}/api/webhooks/resend-inbound`;
@@ -139,6 +140,27 @@ if (!apiKey || !tursoUrl || !tursoToken) {
 		const before = await countContact();
 		console.log(`\nreal received email ${emailId}: contacts rows for sender before = ${before}`);
 
+		// Remove this script's own leftovers from a previous run. Without it the
+		// very first ingest below is answered as a duplicate and every assertion
+		// about the *newly stored* row silently describes whatever an older run
+		// wrote — which is how a stale, pre-US-E04 thread row survived here.
+		// Emails first, then their now-empty threads: `emails.thread_id` is a real
+		// FK and this connection enforces it.
+		const { rows: staleThreads } = await turso.execute({
+			sql: 'select thread_id from emails where message_id = ?',
+			args: [received.message_id]
+		});
+		await turso.execute({
+			sql: 'delete from emails where message_id = ?',
+			args: [received.message_id]
+		});
+		for (const row of staleThreads) {
+			await turso.execute({
+				sql: 'delete from threads where id = ? and not exists (select 1 from emails where thread_id = ?)',
+				args: [row.thread_id, row.thread_id]
+			});
+		}
+
 		const ingestBody = JSON.stringify({
 			type: 'email.received',
 			created_at: received.created_at,
@@ -185,6 +207,38 @@ if (!apiKey || !tursoUrl || !tursoToken) {
 		if (!sanitized) failures++;
 		console.log(
 			`${sanitized ? 'PASS' : 'FAIL'}  stored body_html contains no script/handler/iframe markup`
+		);
+
+		// US-E04: the stored email hangs off a real thread whose subject is the
+		// normalized one and whose sort/read state matches the message.
+		//
+		// This exercises the new-thread path only — the leftovers from prior runs
+		// are deleted above, so there is nothing here for the reply/subject
+		// strategies to match against. Those live in `verify-inbound-parse.mts`,
+		// which builds a real reply chain. The assertions are still written so
+		// they can actually fail: `last_message_at` is compared for *equality*
+		// with the message's own timestamp (a `>=` is true by construction, since
+		// the column is a `max()` against exactly that value), and the thread is
+		// required to hold exactly one email after the redelivery above — a
+		// duplicate must not attach a second row to it.
+		const { rows: threadRows } = await turso.execute({
+			sql: `select t.subject as subject, t.is_read as is_read,
+			             t.last_message_at as last_message_at, e.received_at as received_at,
+			             (select count(*) from emails where thread_id = t.id) as email_count
+			      from emails e join threads t on t.id = e.thread_id
+			      where e.message_id = ?`,
+			args: [received.message_id]
+		});
+		const thread = threadRows[0];
+		const threaded =
+			thread !== undefined &&
+			thread.subject === normalizeSubject(received.subject ?? '') &&
+			Number(thread.is_read) === 0 &&
+			Number(thread.last_message_at) === Number(thread.received_at) &&
+			Number(thread.email_count) === 1;
+		if (!threaded) failures++;
+		console.log(
+			`${threaded ? 'PASS' : 'FAIL'}  email is attached to a new thread with the normalized subject, unread, holding it alone`
 		);
 
 		// A verified payload for a *different* event type is ignored, not 500'd.

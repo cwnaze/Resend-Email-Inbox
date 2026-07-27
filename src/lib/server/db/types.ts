@@ -8,6 +8,15 @@
 // verification scripts that build their own `drizzle(createClient(...))`
 // instance from `process.env`. Declared here (rather than repeated per module)
 // so the definition can't drift between them.
+// The union with `Transaction` is what lets every helper below run unchanged
+// both directly and inside a `db.transaction(...)` callback (see
+// `inbound/store.ts`, which needs its thread + email writes to be atomic).
+// Derived from the singleton's own `transaction` signature rather than named
+// from `drizzle-orm`'s internals, so it can't drift from the real handle.
 import type { db } from './index';
 
-export type Database = typeof db;
+type DatabaseSingleton = typeof db;
+
+export type Transaction = Parameters<Parameters<DatabaseSingleton['transaction']>[0]>[0];
+
+export type Database = DatabaseSingleton | Transaction;
