@@ -29,6 +29,17 @@
 - Required env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` (read via `$env/dynamic/private`, same pattern as the Turso vars). The module throws at import time if any are missing.
 - Only import `src/lib/server/r2` from server-only code (`+page.server.ts`, `+server.ts`, `src/lib/server/**`) — same rule as the `db` client.
 
+## Inbound webhook (Resend / Svix)
+
+- `src/lib/server/webhooks/svix.ts` (US-E01) is the **only** place a webhook signature is verified: `verifySvixRequest(request)` reads `svix-id`/`svix-timestamp`/`svix-signature`, reads the body as **text**, and returns `{ ok: true, payload, rawBody } | { ok: false, reason }`. Three things to preserve:
+  - It consumes the request body itself, as raw text. The Svix signature covers the exact bytes Resend sent, so `request.json()` followed by a re-serialize will not verify. A `Request` body can only be read once — callers must use the returned `payload`/`rawBody` and never call `request.json()` before or after.
+  - `payload` exists only on the `ok: true` branch by construction, so US-E02..E05's ingestion code physically cannot reach an unverified body. Keep the result type discriminated rather than returning a payload plus a boolean.
+  - `reason` is for `console.warn` server-side only. The endpoint returns a bare `401` with no detail — a failure reason tells an unauthenticated caller how to forge a better signature.
+- The `RESEND_INBOUND_WEBHOOK_SECRET` read is **lazy** (memoized `Webhook` on first verify), not import-time, for the same reason as `email/resend.ts`: `npm run build` imports every `+server.ts` during method detection, so an import-time secret check would make the build require a real credential.
+- `POST /api/webhooks/resend-inbound` (`src/routes/api/webhooks/resend-inbound/+server.ts`) is the gate; US-E02 onward hangs parsing/persistence off the verified `result.payload` inside it, and must not add a second parallel verification path.
+- `src/lib/server/webhooks/verify-inbound-webhook.mts` smoke-tests the endpoint over HTTP against a running dev server (`WEBHOOK_BASE_URL`, default `http://localhost:5173`), using `svix`'s own `sign()` for the positive case. The load-bearing case is **tampered body + genuine signature → 401**: that's what proves the raw bytes are what's verified. Extend this script rather than adding new ad hoc webhook scripts.
+- Registering the webhook URL in the Resend dashboard and adding the real `whsec_…` secret to Vercel is an outstanding project-owner step (same as the Turso/R2/Resend credentials); the local `.env` holds a throwaway generated secret so the endpoint is testable.
+
 ## Auth / route protection
 
 - Every mailbox route lives under the `src/routes/(app)/` route group. `src/routes/(app)/+layout.server.ts` is the single choke point: it calls `validateSession(db, cookies)` and redirects to `/login` on `null`. Add new protected pages under `(app)/` and they inherit this automatically — no per-route auth code needed, and never a second parallel check.
