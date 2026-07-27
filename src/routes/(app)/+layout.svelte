@@ -1,15 +1,16 @@
 <script lang="ts">
 	/**
 	 * App shell for every route under the (app) group: a top bar (app mark,
-	 * search entry point, logout) plus a two-pane list/detail layout on
-	 * desktop (>=1024px, Tailwind's `lg` breakpoint) that collapses to a
-	 * single-pane stack below that, with no horizontal scroll down to 375px.
+	 * search entry point, logout) above the routed content, with no
+	 * horizontal scroll down to 375px.
 	 *
-	 * The left "list" column is a structural placeholder for now — the real
-	 * thread list lands in US-F01 and will replace the placeholder content,
-	 * not the shell around it. It's hidden below `lg` so mobile/tablet get
-	 * the single-pane stack the design calls for; a dedicated mobile list
-	 * view is out of scope for this story.
+	 * US-J02 stood this up with a fixed 360px left column holding a
+	 * placeholder for the thread list. US-F01 removed that column: the
+	 * thread list is part of the *inbox* subtree, not of every `(app)`
+	 * route (a future `/contacts` page would have inherited an inbox list
+	 * beside it), so the list/detail split belongs in `inbox/+layout.svelte`
+	 * once US-G01 gives it a detail pane to sit beside. Until then the
+	 * routed page gets the full width.
 	 */
 	import { resolve } from '$app/paths';
 
@@ -47,12 +48,6 @@
 	</header>
 
 	<div class="flex min-h-0 min-w-0 flex-1">
-		<aside
-			class="hidden w-[360px] shrink-0 flex-col overflow-y-auto border-r border-border lg:flex"
-		>
-			<p class="p-4 font-mono text-sm text-text-muted">Thread list — coming in a later story.</p>
-		</aside>
-
 		<main class="min-w-0 flex-1 overflow-y-auto">
 			{@render children()}
 		</main>
