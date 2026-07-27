@@ -52,6 +52,12 @@
 - `src/routes/logout/+server.ts` (`POST`) clears the session cookie and redirects to `/login`. It's presence-only cookie clearing today (matches `hasSessionCookie`'s presence-only check); once US-B05 lands, also delete the corresponding `sessions` row here.
 - **Any internal `<a href="/...">` (or programmatic navigation) must wrap the path in `resolve(...)` from `$app/paths`** (e.g. `href={resolve('/inbox')}`), not a raw string — this kit version's `svelte/no-navigation-without-resolve` lint rule fails `npm run lint` otherwise. Apply this to every new internal link across the app, not just the shell.
 
+## Shared components
+
+- `src/lib/components/` is the home for shared, feature-agnostic UI components — `ThemeToggle.svelte` (US-J01), and `EmptyState.svelte` / `Skeleton.svelte` / `ErrorMessage.svelte` (US-J03, implementing the design system's Empty/Loading/Error rules from `tasks/prd-ui-ux.md`). Feature-specific components should live under their own route/feature folders instead; only put something here if more than one feature will use it.
+- `EmptyState` takes `message` (required) + optional `subCopy`; `Skeleton` takes `rows` (default 3) and renders that many pulsing `bg-surface` rows; `ErrorMessage` takes `message` (required) + optional `onRetry` and renders in `text-danger`, showing a Retry button only when `onRetry` is passed. All three are demoed on `/dev/tokens` under "Shared states" — extend that section (don't build a parallel demo page) when adding more shared components.
+- When demoing/QAing a `bg-surface`-toned component (like `Skeleton`), wrap it in a `bg-background` container, not another `bg-surface` — same-tone nesting makes it visually disappear. Real usage in an actual list won't have this problem since the page background provides the contrast.
+
 ## Workflow
 
 - This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR, human merges.
