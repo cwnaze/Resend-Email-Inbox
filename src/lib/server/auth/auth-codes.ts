@@ -18,9 +18,28 @@
 //   - Failed verification attempts increment `attempt_count`; 5 failures
 //     invalidates the code (US-B03) — that threshold check lives in the
 //     verify-code endpoint itself, this module just persists the count.
-import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { and, count, desc, eq, gt, gte, isNull, sql } from 'drizzle-orm';
 import { authCodes } from '../db/schema';
 import type { Database } from '../db/types';
+
+/**
+ * Hashes a plaintext login code for storage/comparison. The only hash function
+ * that may ever touch `auth_codes.code_hash` — the entire security property is
+ * that the request-code and verify-code paths hash identically, and a divergence
+ * between two copies of this one-liner would fail silently and permanently as
+ * "wrong code".
+ *
+ * Deliberately a plain SHA-256 rather than an HMAC keyed with a server secret:
+ * a 6-digit code has only a 10^6 preimage space, so an attacker holding the
+ * `auth_codes` table can brute-force the hash trivially either way. The
+ * 10-minute TTL and 5-attempt cap are what make that mostly theoretical; if we
+ * ever want the hash column to be worthless on its own, switch this to an HMAC
+ * (both call sites go through here, so it's a one-line change).
+ */
+export function hashAuthCode(code: string): string {
+	return createHash('sha256').update(code).digest('hex');
+}
 
 /** Inserts a new auth_codes row and returns it. */
 export async function createAuthCode(database: Database, codeHash: string, expiresAt: Date) {
@@ -81,6 +100,35 @@ export async function markAuthCodeUsed(database: Database, id: string, usedAt: D
 		.where(and(eq(authCodes.id, id), isNull(authCodes.usedAt)))
 		.returning();
 	return row;
+}
+
+/**
+ * Counts how many auth_codes rows were created at/after `windowStart` —
+ * i.e. how many code *requests* have happened in the rolling window,
+ * regardless of whether that code has since been used/invalidated/expired.
+ * Used by US-B02 to enforce "no more than 3 requests per 10-minute rolling
+ * window" — a request that gets rate-limited must not insert a row, so this
+ * count reflects only genuine requests.
+ */
+export async function countAuthCodeRequestsSince(database: Database, windowStart: Date) {
+	const rows = await database
+		.select({ value: count() })
+		.from(authCodes)
+		.where(gte(authCodes.createdAt, windowStart));
+	return rows[0]?.value ?? 0;
+}
+
+/**
+ * Deletes a single auth_codes row by id.
+ *
+ * Used to roll back a just-created code when the email carrying it could not be
+ * sent: the plaintext exists only in the request that generated it, so a row
+ * whose code was never delivered is unusable — leaving it behind would keep
+ * consuming a rate-limit slot and (having superseded the previous code) leave
+ * the user with no valid code at all.
+ */
+export async function deleteAuthCode(database: Database, id: string) {
+	await database.delete(authCodes).where(eq(authCodes.id, id));
 }
 
 /**
