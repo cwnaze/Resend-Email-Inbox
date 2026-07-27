@@ -24,6 +24,12 @@ export type StoreInboundAttachmentsDeps = {
 	download: (resendEmailId: string, attachmentId: string) => Promise<AttachmentBytes>;
 	/** Uploads bytes to R2 under `key`. */
 	upload: (key: string, body: Buffer, contentType: string) => Promise<unknown>;
+	/**
+	 * Deletes `key` from R2. Optional, and only ever called to undo an upload
+	 * whose `attachments` row then failed to insert — without it that object is
+	 * orphaned in the bucket forever.
+	 */
+	remove?: (key: string) => Promise<unknown>;
 };
 
 export type StoreInboundAttachmentsResult = {
@@ -107,12 +113,14 @@ export async function storeInboundAttachments(
 
 	for (const attachment of input.attachments) {
 		const key = attachmentObjectKey(input.resendEmailId, attachment);
+		let uploaded = false;
 		try {
 			const { bytes, contentType } = await deps.download(input.resendEmailId, attachment.id);
 			const body = Buffer.from(bytes);
 			const resolvedContentType = attachment.content_type || contentType || FALLBACK_CONTENT_TYPE;
 
 			await deps.upload(key, body, resolvedContentType);
+			uploaded = true;
 
 			stored.push(
 				await insertAttachment(db, {
@@ -131,6 +139,18 @@ export async function storeInboundAttachments(
 				`inbound attachment failed (email ${input.resendEmailId}, attachment ${attachment.id}, key ${key}):`,
 				err
 			);
+
+			// The upload landed but the row didn't, so nothing references this
+			// object and no redelivery will ever repair it (the email's duplicate
+			// check short-circuits). Best-effort delete so the bucket doesn't
+			// accumulate unreachable blobs; a failure here is only logged.
+			if (uploaded && deps.remove) {
+				try {
+					await deps.remove(key);
+				} catch (removeErr) {
+					console.error(`inbound attachment cleanup failed (key ${key}):`, removeErr);
+				}
+			}
 		}
 	}
 

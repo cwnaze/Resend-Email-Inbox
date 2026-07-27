@@ -710,6 +710,37 @@ try {
 		'a nameless attachment still gets a filename',
 		rowsForEmail.some((row) => row.filename === 'attachment-att_2')
 	);
+
+	// An upload that lands but whose row then fails to insert must not leave the
+	// object orphaned: nothing references it and the email's duplicate check
+	// means no redelivery ever repairs it. A bogus email id makes the insert
+	// fail on the `attachments.email_id` FK, after the upload has succeeded.
+	const orphanUploaded: string[] = [];
+	const orphanRemoved: string[] = [];
+	const orphanResult = await storeInboundAttachments(
+		db,
+		{
+			emailId: `no-such-email-${stamp}`,
+			resendEmailId: `us-e05-orphan-${stamp}`,
+			attachments: [meta('att_orphan', 'orphan.txt')]
+		},
+		{
+			download: async () => ({
+				bytes: new TextEncoder().encode('hi\n'),
+				contentType: 'text/plain'
+			}),
+			upload: async (key) => {
+				orphanUploaded.push(key);
+			},
+			remove: async (key) => {
+				orphanRemoved.push(key);
+			}
+		}
+	);
+
+	equal('a failed insert reports the attachment as failed', orphanResult.failed, ['att_orphan']);
+	equal('nothing is reported as stored', orphanResult.stored.length, 0);
+	equal('the orphaned object is deleted from R2', orphanRemoved, orphanUploaded);
 } finally {
 	if (storedMessageIds.length > 0) {
 		const doomed = await db

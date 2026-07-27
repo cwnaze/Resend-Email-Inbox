@@ -18,7 +18,7 @@ import {
 	ReceivedEmailFetchError
 } from '$lib/server/email/resend';
 import { storeInboundAttachments } from '$lib/server/inbound/attachments';
-import { uploadToR2 } from '$lib/server/r2';
+import { deleteFromR2, uploadToR2 } from '$lib/server/r2';
 import { upsertContactFromInbound } from '$lib/server/db/contacts';
 import { storeInboundEmail } from '$lib/server/inbound/store';
 import { db } from '$lib/server/db';
@@ -86,7 +86,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			},
 			{
 				download: fetchReceivedAttachmentBytes,
-				upload: (key, body, contentType) => uploadToR2(key, body, contentType)
+				upload: (key, body, contentType) => uploadToR2(key, body, contentType),
+				remove: (key) => deleteFromR2(key)
 			}
 		);
 		attachmentSummary = ` attachments ${stored.length}/${parsed.attachments.length} stored${
