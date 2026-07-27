@@ -169,8 +169,8 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Branched off ralph/us-b02-request-code-endpoint (not merged to main yet) since this story depends on its auth-codes.ts/sessions-store.ts/resend.ts helpers. Added getLatestAuthCode to src/lib/server/auth/auth-codes.ts (distinct from US-B01's getActiveAuthCode) so POST /api/auth/verify-code (new src/routes/api/auth/verify-code/+server.ts) can distinguish 'no code requested', 'already used', and 'expired' from a genuine digit mismatch, and correctly skip incrementing attempt_count against a dead code. On a correct match: marks the code used_at, generates an opaque 32-byte session token, stores only its SHA-256 hash via createSession, and sets the raw token as an httpOnly/Secure/SameSite=Lax session cookie (30-day expiry per FR-9). On mismatch: increments attempt_count via incrementAuthCodeAttempts; the 5th failed attempt also invalidates the code via markAuthCodeUsed. Hash comparison uses timingSafeEqual on equal-length buffers, not ===. Verified via a new standalone src/lib/server/auth/verify-verify-code.mts (20/20 assertions against the live Turso DB: match+session creation, single-use rejection, attempt increment through the 5th-attempt invalidation, and expired-code rejection without an attempt increment) plus manual curl checks against a running dev server confirming the exact Set-Cookie attributes (HttpOnly, Secure, SameSite=Lax) and reuse rejection. npm run check/lint/build all pass. See docs/demos/US-B03.md for full proof-of-work."
     },
     {
       "id": "US-B04",

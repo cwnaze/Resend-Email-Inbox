@@ -10,9 +10,23 @@
 // argument (typed via `import type` of the `db` singleton) so this module
 // has no `$env/dynamic/private` dependency and can be exercised by the
 // standalone `verify-auth-sessions.mts` script as well as real app code.
+import { createHash } from 'node:crypto';
 import { and, eq, gt } from 'drizzle-orm';
 import { sessions } from '../db/schema';
 import type { Database } from '../db/types';
+
+/**
+ * Hashes a raw session token for storage/lookup — the only hash function that
+ * may touch `sessions.token_hash`. Deliberately separate from
+ * `hashAuthCode` in `auth-codes.ts` despite the identical implementation: the
+ * two hash different secrets with different threat models (a 32-byte random
+ * token has no brute-forceable preimage space, a 6-digit code does), so
+ * changing one — e.g. keying the code hash with an HMAC — must not silently
+ * change the other. US-B05 should call this rather than re-inlining it.
+ */
+export function hashSessionToken(token: string): string {
+	return createHash('sha256').update(token).digest('hex');
+}
 
 /** Inserts a new sessions row (given the hash of the raw session token) and returns it. */
 export async function createSession(database: Database, tokenHash: string, expiresAt: Date) {

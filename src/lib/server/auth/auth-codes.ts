@@ -85,6 +85,27 @@ export async function invalidateActiveAuthCodes(database: Database, now: Date = 
 }
 
 /**
+ * Kills a single auth code by pulling `expires_at` back to `now`, without
+ * touching `used_at`. Same mechanism as `invalidateActiveAuthCodes`, scoped to
+ * one row.
+ *
+ * US-B03 uses this for the 5-attempt lockout: a code burned by wrong guesses
+ * was never redeemed, so stamping `used_at` on it would both corrupt the
+ * "was this code ever redeemed?" answer and make verify-code report "already
+ * used" for a code the user never successfully entered. Expiring it produces
+ * the accurate error copy and keeps `used_at IS NOT NULL` meaning exactly one
+ * thing.
+ */
+export async function expireAuthCode(database: Database, id: string, now: Date = new Date()) {
+	const [row] = await database
+		.update(authCodes)
+		.set({ expiresAt: now })
+		.where(eq(authCodes.id, id))
+		.returning();
+	return row;
+}
+
+/**
  * Marks a specific auth code row as used (successful verification).
  *
  * The `used_at IS NULL` guard makes this an atomic compare-and-swap: exactly
@@ -116,6 +137,19 @@ export async function countAuthCodeRequestsSince(database: Database, windowStart
 		.from(authCodes)
 		.where(gte(authCodes.createdAt, windowStart));
 	return rows[0]?.value ?? 0;
+}
+
+/**
+ * Returns the single most-recently-created auth_codes row, regardless of
+ * used/expired state, or `null` if none exist. US-B03 (verify-code) uses
+ * this — rather than `getActiveAuthCode` — because it needs to distinguish
+ * "no code exists", "code exists but is used", and "code exists but is
+ * expired" so it can return the right error message and correctly skip
+ * incrementing `attempt_count` against a dead (used/expired) code.
+ */
+export async function getLatestAuthCode(database: Database) {
+	const rows = await database.select().from(authCodes).orderBy(desc(authCodes.createdAt)).limit(1);
+	return rows[0] ?? null;
 }
 
 /**
