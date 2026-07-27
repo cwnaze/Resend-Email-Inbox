@@ -153,8 +153,8 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "POST /api/auth/request-code (src/routes/api/auth/request-code/+server.ts): generates a CSPRNG 6-digit code (node:crypto randomInt), stores only its SHA-256 hash, inserts an auth_codes row (expires_at = now + 10 min), invalidates any previously active code, then sends the code via Resend (src/lib/server/email/resend.ts) to the constant AUTH_RECIPIENT_EMAIL. Rate limiting checks countAuthCodeRequestsSince (new helper in auth-codes.ts) against a rolling 10-minute window BEFORE any invalidate/insert/send, so a 429 never creates a row or calls Resend. Verified: standalone src/lib/server/auth/verify-request-code.mts (11/11 assertions) against the live Turso DB, plus manual live curl checks (429 path confirmed with seeded rows; success path reaches the real Resend API and fails with a clean 401 due to the placeholder RESEND_API_KEY in this dev environment, which has no real Resend account). Provisioning a real Resend API key is an outstanding manual step for the project owner (same pattern as R2/Turso in earlier stories). See docs/demos/US-B02.md."
     },
     {
       "id": "US-B03",

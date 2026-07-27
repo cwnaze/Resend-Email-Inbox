@@ -18,7 +18,7 @@
 //   - Failed verification attempts increment `attempt_count`; 5 failures
 //     invalidates the code (US-B03) — that threshold check lives in the
 //     verify-code endpoint itself, this module just persists the count.
-import { and, desc, eq, gt, isNull } from 'drizzle-orm';
+import { and, count, desc, eq, gt, gte, isNull } from 'drizzle-orm';
 import type { db as dbSingleton } from '../db';
 import { authCodes } from '../db/schema';
 
@@ -68,6 +68,22 @@ export async function markAuthCodeUsed(database: Database, id: string, usedAt: D
 		.where(eq(authCodes.id, id))
 		.returning();
 	return row;
+}
+
+/**
+ * Counts how many auth_codes rows were created at/after `windowStart` —
+ * i.e. how many code *requests* have happened in the rolling window,
+ * regardless of whether that code has since been used/invalidated/expired.
+ * Used by US-B02 to enforce "no more than 3 requests per 10-minute rolling
+ * window" — a request that gets rate-limited must not insert a row, so this
+ * count reflects only genuine requests.
+ */
+export async function countAuthCodeRequestsSince(database: Database, windowStart: Date) {
+	const rows = await database
+		.select({ value: count() })
+		.from(authCodes)
+		.where(gte(authCodes.createdAt, windowStart));
+	return rows[0]?.value ?? 0;
 }
 
 /** Increments the failed-attempt counter for a specific auth code row. */
