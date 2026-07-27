@@ -19,6 +19,7 @@
 // "run the verify script" is not a read-only operation.
 //
 // Run via: node --env-file=.env node_modules/.bin/tsx src/lib/server/auth/verify-auth-sessions.mts
+import type { Cookies } from '@sveltejs/kit';
 import { createClient } from '@libsql/client';
 import { eq, inArray } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/libsql';
@@ -34,8 +35,10 @@ import {
 	createSession,
 	deleteSessionByTokenHash,
 	extendSessionExpiry,
-	getValidSessionByTokenHash
+	getValidSessionByTokenHash,
+	hashSessionToken
 } from './sessions-store.js';
+import { SESSION_TTL_MS, destroySession, validateSession } from './session.js';
 
 const url = process.env.TURSO_DATABASE_URL;
 const authToken = process.env.TURSO_AUTH_TOKEN;
@@ -54,6 +57,34 @@ function check(label: string, condition: boolean) {
 // Every auth_codes row this script inserts, recorded as it is created so the
 // `finally` cleanup can remove them even if an assertion above it throws.
 const createdAuthCodeIds: string[] = [];
+
+/** Every sessions token_hash this script inserts, for the same reason. */
+const trackedSessionHashes: string[] = ['hash-of-session-token'];
+
+/**
+ * Minimal stand-in for SvelteKit's `Cookies`, recording writes so the tests can
+ * assert that `validateSession`/`destroySession` set and clear the cookie. Only
+ * the three methods those two functions actually call are implemented, so it is
+ * cast to `Cookies` rather than claiming to satisfy the full interface.
+ */
+function fakeCookies(jar: Record<string, string>) {
+	const store = { ...jar };
+	const setCalls: { value: string; expires?: Date }[] = [];
+	const deleteCalls: string[] = [];
+	return {
+		get: (name: string) => store[name],
+		set: (name: string, value: string, options: { expires?: Date }) => {
+			store[name] = value;
+			setCalls.push({ value, expires: options.expires });
+		},
+		delete: (name: string) => {
+			delete store[name];
+			deleteCalls.push(name);
+		},
+		setCalls,
+		deleteCalls
+	} as unknown as Cookies & { setCalls: typeof setCalls; deleteCalls: string[] };
+}
 
 async function trackAuthCode(codeHash: string, expiresAt: Date) {
 	const row = await createAuthCode(db, codeHash, expiresAt);
@@ -170,6 +201,74 @@ try {
 
 	const deletedAgain = await deleteSessionByTokenHash(db, 'hash-of-session-token');
 	check('deleteSessionByTokenHash returns false when nothing to delete', deletedAgain === false);
+
+	// --- session.ts: validateSession / destroySession (US-B05) ---
+	//
+	// These take a `Cookies` handle, which only exists inside a SvelteKit
+	// request; `fakeCookies` below stands in for it. The point of exercising them
+	// here rather than only through the HTTP layer is that the refresh/expiry
+	// arithmetic is time-dependent — passing an explicit `now` lets us assert the
+	// sliding-expiration branch without waiting 15 days.
+	const rawToken = 'b05-raw-session-token';
+	const rawTokenHash = hashSessionToken(rawToken);
+	trackedSessionHashes.push(rawTokenHash);
+
+	const freshExpiry = new Date(now.getTime() + SESSION_TTL_MS);
+	await createSession(db, rawTokenHash, freshExpiry);
+
+	const cookies = fakeCookies({ session: rawToken });
+	const valid = await validateSession(db, cookies, now);
+	check('validateSession accepts a live token (hashes the cookie, finds the row)', valid !== null);
+	check(
+		'a fresh session is not refreshed (no cookie re-set, expires_at unchanged)',
+		cookies.setCalls.length === 0 && valid?.expiresAt.getTime() === freshExpiry.getTime()
+	);
+
+	// Past the halfway point of the TTL, an active request slides the expiry
+	// forward and re-sets the cookie so the browser copy matches the row.
+	const later = new Date(now.getTime() + SESSION_TTL_MS / 2 + 1000);
+	const refreshed = await validateSession(db, cookies, later);
+	check(
+		'validateSession slides expires_at forward past the halfway point',
+		refreshed !== null && refreshed.expiresAt.getTime() > freshExpiry.getTime()
+	);
+	check(
+		'the refreshed session cookie is re-set with the new expiry',
+		cookies.setCalls.length === 1
+	);
+
+	check(
+		'validateSession rejects an unknown token',
+		(await validateSession(db, fakeCookies({ session: 'not-a-real-token' }), now)) === null
+	);
+	check(
+		'validateSession rejects a request with no cookie at all',
+		(await validateSession(db, fakeCookies({}), now)) === null
+	);
+
+	const expiredHash = hashSessionToken('b05-expired-session-token');
+	trackedSessionHashes.push(expiredHash);
+	await createSession(db, expiredHash, new Date(now.getTime() - 1000));
+	check(
+		'validateSession rejects an expired session',
+		(await validateSession(db, fakeCookies({ session: 'b05-expired-session-token' }), now)) === null
+	);
+
+	// Logout: the row must actually go away, not just the cookie (FR-8).
+	const logoutCookies = fakeCookies({ session: rawToken });
+	check(
+		'destroySession deletes the sessions row',
+		(await destroySession(db, logoutCookies)) === true
+	);
+	check('destroySession clears the session cookie', logoutCookies.deleteCalls.includes('session'));
+	check(
+		'the deleted session no longer validates',
+		(await validateSession(db, fakeCookies({ session: rawToken }), now)) === null
+	);
+	check(
+		'destroySession reports false when there was no session to delete',
+		(await destroySession(db, fakeCookies({}))) === false
+	);
 } finally {
 	// --- cleanup ---
 	// Runs even if an assertion above threw, so a failed run never leaves test
@@ -177,6 +276,8 @@ try {
 	if (createdAuthCodeIds.length > 0) {
 		await db.delete(schema.authCodes).where(inArray(schema.authCodes.id, createdAuthCodeIds));
 	}
-	await deleteSessionByTokenHash(db, 'hash-of-session-token');
+	for (const tokenHash of trackedSessionHashes) {
+		await deleteSessionByTokenHash(db, tokenHash);
+	}
 	await client.close();
 }

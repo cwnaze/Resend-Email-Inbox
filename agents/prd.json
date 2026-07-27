@@ -18,7 +18,7 @@
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Scaffolded via `sv create` (prettier, eslint, tailwindcss, sveltekit-adapter=vercel add-ons). No svelte.config.js in this SvelteKit version \u2014 adapter/compiler options live in vite.config.ts instead. adapter-vercel given explicit runtime: 'nodejs22.x' since local Node (v26) is unsupported by its auto-detection. See docs/demos/US-A00.md for verification proof."
+      "notes": "Scaffolded via `sv create` (prettier, eslint, tailwindcss, sveltekit-adapter=vercel add-ons). No svelte.config.js in this SvelteKit version — adapter/compiler options live in vite.config.ts instead. adapter-vercel given explicit runtime: 'nodejs22.x' since local Node (v26) is unsupported by its auto-detection. See docs/demos/US-A00.md for verification proof."
     },
     {
       "id": "US-A01",
@@ -47,7 +47,7 @@
       ],
       "priority": 3,
       "passes": true,
-      "notes": "Bucket is private (owner is not using a public bucket URL / custom domain), so there is no R2_PUBLIC_URL_BASE env var \u2014 access is via presigned URLs generated on demand instead of a static public URL. This affects attachments.r2_public_url in prd-data-model.md and the 'public URL' wording in US-E05/US-G03 acceptance criteria; those should be read as 'presigned URL generated at request time' rather than a stored permanent public URL. src/lib/server/r2/index.ts provides uploadToR2/deleteFromR2/getR2SignedDownloadUrl, verified end-to-end (upload, presigned fetch, delete, post-delete 404) against the real R2 bucket via scripts/verify-r2.mts. R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET_NAME are set locally in .env; no vercel CLI/project link is available in this environment, so adding the same vars to the Vercel project's env settings is still an outstanding manual step for the project owner before deploying."
+      "notes": "Bucket is private (owner is not using a public bucket URL / custom domain), so there is no R2_PUBLIC_URL_BASE env var — access is via presigned URLs generated on demand instead of a static public URL. This affects attachments.r2_public_url in prd-data-model.md and the 'public URL' wording in US-E05/US-G03 acceptance criteria; those should be read as 'presigned URL generated at request time' rather than a stored permanent public URL. src/lib/server/r2/index.ts provides uploadToR2/deleteFromR2/getR2SignedDownloadUrl, verified end-to-end (upload, presigned fetch, delete, post-delete 404) against the real R2 bucket via scripts/verify-r2.mts. R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET_NAME are set locally in .env; no vercel CLI/project link is available in this environment, so adding the same vars to the Vercel project's env settings is still an outstanding manual step for the project owner before deploying."
     },
     {
       "id": "US-A03",
@@ -108,7 +108,7 @@
       ],
       "priority": 7,
       "passes": true,
-      "notes": "App shell added at src/routes/(app)/+layout.svelte: top bar (app mark linking to /inbox, search input placeholder, POST /logout form) plus a two-pane layout using Tailwind's lg (1024px) breakpoint \u2014 fixed 360px left 'list' column (placeholder text; real thread list lands in US-F01) and a flexible right pane rendering {@render children()}. Below lg, the left column is hidden (display:none via 'hidden lg:flex') giving a single-pane stack with no horizontal overflow down to 375px. Added src/routes/logout/+server.ts (POST) which clears the session cookie and redirects to /login \u2014 real session-row invalidation lands in US-B05 once the sessions table is read from. See docs/demos/US-J02.md for verification proof (rodney screenshots at 1280px and 375px, curl-based route-protection checks, logout redirect confirmed)."
+      "notes": "App shell added at src/routes/(app)/+layout.svelte: top bar (app mark linking to /inbox, search input placeholder, POST /logout form) plus a two-pane layout using Tailwind's lg (1024px) breakpoint — fixed 360px left 'list' column (placeholder text; real thread list lands in US-F01) and a flexible right pane rendering {@render children()}. Below lg, the left column is hidden (display:none via 'hidden lg:flex') giving a single-pane stack with no horizontal overflow down to 375px. Added src/routes/logout/+server.ts (POST) which clears the session cookie and redirects to /login — real session-row invalidation lands in US-B05 once the sessions table is read from. See docs/demos/US-J02.md for verification proof (rodney screenshots at 1280px and 375px, curl-based route-protection checks, logout redirect confirmed)."
     },
     {
       "id": "US-J03",
@@ -187,7 +187,7 @@
       ],
       "priority": 12,
       "passes": true,
-      "notes": "Login page at /login: centered app mark + single 'Send me a code' button (no email input), transitions to a 6-digit monospace code step on success. Incorrect codes show an inline danger-color error without navigating away; a valid code redirects to /inbox. Added retryAfterMinutes to POST /api/auth/request-code's 429 response (new getOldestAuthCodeRequestSince query helper) so the UI can show 'try again in N minutes'. Verified in browser via rodney with fetch mocked for request-code/verify-code (no real Resend account provisioned in this dev env \u2014 same outstanding manual step as US-B02/B03); the underlying endpoints' real behavior was already verified via curl in those stories. See docs/demos/US-B04.md."
+      "notes": "Login page at /login: centered app mark + single 'Send me a code' button (no email input), transitions to a 6-digit monospace code step on success. Incorrect codes show an inline danger-color error without navigating away; a valid code redirects to /inbox. Added retryAfterMinutes to POST /api/auth/request-code's 429 response (new getOldestAuthCodeRequestSince query helper) so the UI can show 'try again in N minutes'. Verified in browser via rodney with fetch mocked for request-code/verify-code (no real Resend account provisioned in this dev env — same outstanding manual step as US-B02/B03); the underlying endpoints' real behavior was already verified via curl in those stories. See docs/demos/US-B04.md."
     },
     {
       "id": "US-B05",
@@ -201,8 +201,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 13,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Replaced US-A03's cookie-presence placeholder with real validation. `src/lib/server/auth/session.ts` now owns the session cookie end to end: SESSION_COOKIE_NAME, SESSION_TTL_MS (30 days, FR-9), setSessionCookie/clearSessionCookie, validateSession(db, cookies, now?) and destroySession(db, cookies). `hasSessionCookie` is gone. validateSession hashes the cookie token via hashSessionToken, looks it up with getValidSessionByTokenHash, and returns null for missing/unknown/expired alike (distinguishing them would leak whether a token ever existed); FR-9 sliding expiration refreshes expires_at only once the session is past the halfway point of its TTL, so it costs ~1 write per 15 days instead of one per page view, and re-sets the cookie when it does. (app)/+layout.server.ts calls it and clears the cookie before redirecting so a stale token isn't re-sent on every request. New POST /api/auth/logout deletes the sessions row and clears the cookie, then 303s to /login (303 so a JS-free form POST is followed by a GET); the old /logout route is removed and the app shell's existing 'Log out' button now posts to the new path. Cookie flags live in one place so the set in verify-code and the delete in logout can't drift — a cookie deleted with a different `path` than it was set with is silently not deleted. Verified: `npm run check` (0 errors), `npm run lint`, `npm run build` all clean; 30 assertions pass in src/lib/server/auth/verify-auth-sessions.mts against the live Turso DB (11 new, covering accept/refresh/unknown/no-cookie/expired and both destroySession outcomes); over HTTP, /inbox 302s to /login with no cookie AND with a non-empty bogus cookie (that case returned 200 before this story); and a full rodney browser run logged in with a real code, reached /inbox (sessions rows 0 -> 1), clicked 'Log out', landed on /login with sessions rows 1 -> 0 and no session cookie, and was redirected again on a fresh /inbox visit. See docs/demos/US-B05.md (showboat verify exits 0)."
     },
     {
       "id": "US-E01",

@@ -20,10 +20,9 @@ import {
 	markAuthCodeUsed
 } from '$lib/server/auth/auth-codes';
 import { createSession, hashSessionToken } from '$lib/server/auth/sessions-store';
-import { SESSION_COOKIE_NAME } from '$lib/server/auth/session';
+import { SESSION_TTL_MS, setSessionCookie } from '$lib/server/auth/session';
 
 const MAX_ATTEMPTS = 5;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, per FR-9
 
 function hashesMatch(a: string, b: string): boolean {
 	const bufA = Buffer.from(a, 'hex');
@@ -109,13 +108,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 	const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
 	await createSession(db, tokenHash, expiresAt);
 
-	cookies.set(SESSION_COOKIE_NAME, sessionToken, {
-		path: '/',
-		httpOnly: true,
-		secure: true,
-		sameSite: 'lax',
-		expires: expiresAt
-	});
+	// Cookie name/flags come from `session.ts` so the set here and the delete in
+	// `POST /api/auth/logout` can't drift (a mismatched `path` fails to delete).
+	setSessionCookie(cookies, sessionToken, expiresAt);
 
 	return json({ ok: true });
 };

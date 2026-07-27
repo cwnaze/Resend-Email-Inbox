@@ -1,10 +1,11 @@
 // Drizzle query helpers for the `sessions` table (US-B01).
 //
-// Named `sessions-store.ts` (not `sessions.ts`) to avoid confusion with the
-// existing `session.ts` in this directory, which only holds the session
-// cookie name/presence-check helper used by route protection (US-A03) — that
-// file is untouched here and keeps doing its job until US-B05 wires real
-// session validation into `(app)/+layout.server.ts`.
+// Named `sessions-store.ts` (not `sessions.ts`) to avoid confusion with
+// `session.ts` in this directory. The split is table vs. cookie: this module
+// owns the `sessions` *table* (raw queries, no notion of a request), while
+// `session.ts` owns the session *cookie* and the request-level lifecycle built
+// on these helpers — `validateSession` and `destroySession` (US-B05) both call
+// into here. Keep new table queries here and new cookie/request logic there.
 //
 // Like `auth-codes.ts`, these accept a database handle as their first
 // argument (typed via `import type` of the `db` singleton) so this module
@@ -22,7 +23,8 @@ import type { Database } from '../db/types';
  * two hash different secrets with different threat models (a 32-byte random
  * token has no brute-forceable preimage space, a 6-digit code does), so
  * changing one — e.g. keying the code hash with an HMAC — must not silently
- * change the other. US-B05 should call this rather than re-inlining it.
+ * change the other. Callers hash through this function rather than re-inlining
+ * it (see `validateSession`/`destroySession` in `session.ts`).
  */
 export function hashSessionToken(token: string): string {
 	return createHash('sha256').update(token).digest('hex');
