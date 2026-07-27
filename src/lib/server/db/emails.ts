@@ -49,6 +49,12 @@ export type InsertInboundEmailResult = {
  * webhook deliveries, so a duplicate is an expected event, not an error. A bare
  * insert would turn the `emails_message_id_unique` violation into a 500 — which
  * Resend would then retry forever, against a row that is already stored.
+ *
+ * The conflict target is pinned to `message_id`: an untargeted
+ * `onConflictDoNothing()` would also swallow a violation of some *other*
+ * constraint, and the re-read below would then miss and report it as a generic
+ * "insert failed", hiding the real cause. Only the redelivery case is meant to
+ * be absorbed here; anything else should surface as the error it is.
  */
 export async function insertInboundEmail(
 	db: Database,
@@ -57,7 +63,7 @@ export async function insertInboundEmail(
 	const [inserted] = await db
 		.insert(emails)
 		.values({ ...values, direction: 'inbound', isRead: false, isDeleted: false })
-		.onConflictDoNothing()
+		.onConflictDoNothing({ target: emails.messageId })
 		.returning();
 
 	if (inserted) return { email: inserted, created: true };

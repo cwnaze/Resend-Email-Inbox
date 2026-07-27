@@ -108,20 +108,36 @@ export async function storeInboundEmail(
 		now
 	);
 
-	const result = await insertInboundEmail(db, {
-		threadId,
-		messageId: parsed.messageId,
-		inReplyTo: parsed.inReplyTo,
-		fromEmail: parsed.fromEmail,
-		fromName: parsed.fromName,
-		toEmails: parsed.toEmails,
-		ccEmails: parsed.ccEmails,
-		bccEmails: parsed.bccEmails,
-		subject: parsed.subject,
-		bodyText: parsed.bodyText,
-		bodyHtml: sanitizeEmailHtml(parsed.bodyHtml),
-		receivedAt: parsed.receivedAt
-	});
+	let result;
+	try {
+		result = await insertInboundEmail(db, {
+			threadId,
+			messageId: parsed.messageId,
+			inReplyTo: parsed.inReplyTo,
+			fromEmail: parsed.fromEmail,
+			fromName: parsed.fromName,
+			toEmails: parsed.toEmails,
+			ccEmails: parsed.ccEmails,
+			bccEmails: parsed.bccEmails,
+			subject: parsed.subject,
+			bodyText: parsed.bodyText,
+			bodyHtml: sanitizeEmailHtml(parsed.bodyHtml),
+			receivedAt: parsed.receivedAt
+		});
+	} catch (error) {
+		// A failed insert throws → the endpoint 500s → Resend redelivers. Without
+		// this, every retry would leave behind another empty `threads` row that
+		// nothing points at. Best-effort: the original error is what matters, so a
+		// cleanup failure must not mask it.
+		if (createdThreadId) {
+			try {
+				await deleteThread(db, createdThreadId);
+			} catch (cleanupError) {
+				console.warn(`failed to clean up thread ${createdThreadId}`, cleanupError);
+			}
+		}
+		throw error;
+	}
 
 	if (!result.created) {
 		// Lost the race on the unique index: undo the thread this call created (if
