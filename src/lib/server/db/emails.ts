@@ -4,7 +4,7 @@
 // first argument (typed via `Database` from `./types`) rather than importing the
 // `db` singleton, so this module never pulls in `$env/dynamic/private` and can
 // be exercised by a standalone `tsx` verification script.
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { emails, threads } from './schema';
 import type { Database } from './types';
 
@@ -69,9 +69,91 @@ export async function insertInboundEmail(
 }
 
 /**
- * Creates a thread. US-E04 replaces the *choice* of thread (In-Reply-To /
- * subject matching) but not this helper — a genuinely new conversation still
- * lands here.
+ * Finds the thread of the first email whose `message_id` is one of `messageIds`
+ * (US-E04, FR-4's primary strategy).
+ *
+ * Takes a list rather than a single id so the caller can pass `In-Reply-To`
+ * followed by the `References` chain in priority order: the direct parent is
+ * the best answer, but a client that sent only `References`, or a parent this
+ * mailbox never received, still threads off an ancestor. `inArray` returns
+ * rows in no particular order, so the caller's ordering is re-applied here
+ * rather than trusted from the query.
+ */
+export async function findThreadIdByMessageIds(
+	db: Database,
+	messageIds: string[]
+): Promise<string | null> {
+	if (messageIds.length === 0) return null;
+
+	const rows = await db
+		.select({ messageId: emails.messageId, threadId: emails.threadId })
+		.from(emails)
+		.where(inArray(emails.messageId, messageIds));
+	if (rows.length === 0) return null;
+
+	const byMessageId = new Map(rows.map((row) => [row.messageId, row.threadId]));
+	for (const messageId of messageIds) {
+		const threadId = byMessageId.get(messageId);
+		if (threadId) return threadId;
+	}
+	return null;
+}
+
+/**
+ * FR-4's secondary strategy: the most recent thread with the same *normalized*
+ * subject whose last message landed within `windowMs`.
+ *
+ * The comparison is a plain equality against `threads.subject` because that
+ * column already stores the normalized form (see `inbound/threading.ts`).
+ * Deliberately no match on an empty subject — every subject-less email would
+ * otherwise pile into a single thread.
+ */
+export async function findThreadBySubject(
+	db: Database,
+	normalizedSubject: string,
+	since: Date
+): Promise<Thread | undefined> {
+	if (normalizedSubject === '') return undefined;
+
+	const [row] = await db
+		.select()
+		.from(threads)
+		.where(and(eq(threads.subject, normalizedSubject), gte(threads.lastMessageAt, since)))
+		.orderBy(desc(threads.lastMessageAt))
+		.limit(1);
+	return row;
+}
+
+/**
+ * Records that an unread message joined a thread.
+ *
+ * `is_read` is forced back to false because the Data Model PRD defines it as
+ * "true only if every message in thread is read" — a newly arrived inbound
+ * email is unread by definition, so a previously-read thread becomes unread
+ * again. `last_message_at` only ever moves forward: a late redelivery of an
+ * older message must not drag a thread down the inbox sort order.
+ */
+export async function touchThreadForNewMessage(
+	db: Database,
+	threadId: string,
+	messageAt: Date
+): Promise<void> {
+	const [thread] = await db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
+	if (!thread) return;
+
+	await db
+		.update(threads)
+		.set({
+			isRead: false,
+			lastMessageAt: messageAt > thread.lastMessageAt ? messageAt : thread.lastMessageAt
+		})
+		.where(eq(threads.id, threadId));
+}
+
+/**
+ * Creates a thread. `subject` must already be normalized
+ * (`inbound/threading.ts`) — the column is the grouping key for FR-4's subject
+ * fallback, and a raw `Re: …` written here would never match again.
  */
 export async function createThread(
 	db: Database,
