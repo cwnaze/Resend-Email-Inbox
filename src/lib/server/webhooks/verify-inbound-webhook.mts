@@ -169,6 +169,24 @@ if (!apiKey || !tursoUrl || !tursoToken) {
 			`${stillOne ? 'PASS' : 'FAIL'}  redelivery did not duplicate -> ${afterRetry} row(s) (expected 1)`
 		);
 
+		// US-E03: the email itself is stored, exactly once, with sanitized HTML.
+		const { rows: emailRows } = await turso.execute({
+			sql: 'select count(*) as n, max(body_html) as html from emails where message_id = ?',
+			args: [received.message_id]
+		});
+		const storedOnce = Number(emailRows[0].n) === 1;
+		if (!storedOnce) failures++;
+		console.log(
+			`${storedOnce ? 'PASS' : 'FAIL'}  email stored exactly once after redelivery -> ${emailRows[0].n} row(s) (expected 1)`
+		);
+
+		const storedHtml = typeof emailRows[0].html === 'string' ? emailRows[0].html : '';
+		const sanitized = !/<script|\son\w+\s*=|<iframe/i.test(storedHtml);
+		if (!sanitized) failures++;
+		console.log(
+			`${sanitized ? 'PASS' : 'FAIL'}  stored body_html contains no script/handler/iframe markup`
+		);
+
 		// A verified payload for a *different* event type is ignored, not 500'd.
 		const otherBody = JSON.stringify({
 			type: 'email.delivered',

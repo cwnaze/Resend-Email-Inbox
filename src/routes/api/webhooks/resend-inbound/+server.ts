@@ -4,16 +4,17 @@
 // raw body *before* anything is parsed or persisted (FR-1,
 // tasks/prd-feature-inbound-processing.md).
 //
-// US-E01 built the verification gate. US-E02 adds parsing and the sender
-// contact upsert. HTML sanitization + `emails` insert (US-E03), thread
-// assignment (US-E04) and attachment upload (US-E05) hang off the same
-// `parsed` object below.
+// US-E01 built the verification gate. US-E02 added parsing and the sender
+// contact upsert. US-E03 adds HTML sanitization + the idempotent `emails`
+// insert (`storeInboundEmail`). Thread assignment (US-E04) and attachment
+// upload (US-E05) hang off the same `parsed` object below.
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { verifySvixRequest } from '$lib/server/webhooks/svix';
 import { parseInboundWebhookEvent, parseReceivedEmail } from '$lib/server/inbound/parse';
 import { fetchReceivedEmail, ReceivedEmailFetchError } from '$lib/server/email/resend';
 import { upsertContactFromInbound } from '$lib/server/db/contacts';
+import { storeInboundEmail } from '$lib/server/inbound/store';
 import { db } from '$lib/server/db';
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -63,11 +64,15 @@ export const POST: RequestHandler = async ({ request }) => {
 	// Deliberately no sender address in the log line: it would put a real
 	// person's email address in the platform's function logs on every delivery,
 	// and the contact id already identifies the row if it needs looking up.
+	const { email, created: emailCreated } = await storeInboundEmail(db, parsed);
+
 	console.log(
 		`inbound email ${parsed.resendEmailId}`,
-		`(contact ${contact.id} ${created ? 'created' : 'existing'})`
+		`(contact ${contact.id} ${created ? 'created' : 'existing'};`,
+		`email ${email.id} ${emailCreated ? 'stored' : 'duplicate, skipped'})`
 	);
 
-	// US-E03 continues from `parsed` here: sanitize, dedupe on message_id, insert.
-	return json({ ok: true });
+	// US-E04 replaces the thread assignment inside `storeInboundEmail`; US-E05
+	// hangs attachment upload off `parsed.attachments` + `email.id` here.
+	return json({ ok: true, duplicate: !emailCreated });
 };

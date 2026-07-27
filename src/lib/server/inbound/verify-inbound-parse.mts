@@ -22,6 +22,9 @@ import { contacts } from '../db/schema.js';
 import type { Database } from '../db/types.js';
 import { getContactByEmail, normalizeEmail, upsertContactFromInbound } from '../db/contacts.js';
 import { parseInboundWebhookEvent, parseReceivedEmail } from './parse.js';
+import { sanitizeEmailHtml } from './sanitize.js';
+import { storeInboundEmail } from './store.js';
+import { emails, threads } from '../db/schema.js';
 
 let failures = 0;
 let checks = 0;
@@ -199,7 +202,47 @@ console.log('\nparseReceivedEmail — reply, remaining fields');
 }
 
 // ---------------------------------------------------------------------------
-// Part 3 — contact upsert (live Turso)
+// Part 3 — HTML sanitization (pure, US-E03)
+// ---------------------------------------------------------------------------
+
+console.log('\nsanitizeEmailHtml');
+{
+	const clean = sanitizeEmailHtml(
+		[
+			'<p>Hello <b>there</b></p>',
+			'<script>alert(1)</script>',
+			'<img src="https://cdn.example.com/pixel.gif" onerror="steal()" srcset="x 2x">',
+			'<iframe src="https://evil.example.com"></iframe>',
+			'<a href="javascript:alert(1)" onclick="x()">click</a>',
+			'<a href="https://example.com/ok">ok</a>',
+			'<link rel="stylesheet" href="https://evil.example.com/a.css">',
+			'<style>body{background:url(https://evil.example.com/t.png)}</style>',
+			'<div style="background:url(https://evil.example.com/t.png)" data-track="1">x</div>',
+			'<form action="https://evil.example.com"><input name="pw"></form>'
+		].join('')
+	);
+	const has = (needle: string) => (clean ?? '').includes(needle);
+
+	check('keeps benign markup', has('<p>Hello <b>there</b></p>'));
+	check('keeps a safe link', has('href="https://example.com/ok"'));
+	check('strips <script>', !has('script') && !has('alert(1)'));
+	check('strips event handlers', !has('onerror') && !has('onclick'));
+	check('strips javascript: URLs', !has('javascript:'));
+	check('strips <iframe>', !has('iframe'));
+	check('strips <link>', !has('<link'));
+	check('strips <style> and its contents', !has('<style') && !has('background:url'));
+	check('strips srcset / style / data-* attributes', !has('srcset') && !has('data-track'));
+	check('strips <form>/<input>', !has('<form') && !has('<input'));
+	check('leaves no reference to the evil host', !has('evil.example.com'), clean);
+
+	equal('null in, null out', sanitizeEmailHtml(null), null);
+	equal('undefined in, null out', sanitizeEmailHtml(undefined), null);
+	equal('blank in, null out', sanitizeEmailHtml('   \n'), null);
+	equal('all-malicious body collapses to null', sanitizeEmailHtml('<script>x()</script>'), null);
+}
+
+// ---------------------------------------------------------------------------
+// Part 4 — contact upsert + email storage (live Turso)
 // ---------------------------------------------------------------------------
 
 const url = process.env.TURSO_DATABASE_URL;
@@ -215,6 +258,7 @@ const stamp = process.env.VERIFY_STAMP ?? String(process.hrtime.bigint());
 const newSender = `us-e02-new-${stamp}@example.com`;
 const manualSender = `us-e02-manual-${stamp}@example.com`;
 const createdEmails: string[] = [];
+const storedMessageIds: string[] = [];
 
 try {
 	console.log('\nupsertContactFromInbound — live DB');
@@ -276,7 +320,77 @@ try {
 	// (g) lookup helper is case-insensitive
 	const found = await getContactByEmail(db, newSender.toUpperCase());
 	equal('getContactByEmail is case-insensitive', found?.id, first.contact.id);
+
+	// -------------------------------------------------------------------------
+	// storeInboundEmail — sanitize + idempotent insert (US-E03)
+	// -------------------------------------------------------------------------
+	console.log('\nstoreInboundEmail — live DB');
+
+	const parsed = parseReceivedEmail({
+		...realDelivery,
+		message_id: `<us-e03-${stamp}@example.com>`,
+		headers: {
+			...realDelivery.headers,
+			'message-id': `<us-e03-${stamp}@example.com>`
+		},
+		html: '<p>hi</p><script>alert(1)</script><img src="x" onerror="y()">',
+		text: '  hi\n\nplain  '
+	} as GetReceivingEmailResponseSuccess);
+
+	const stored = await storeInboundEmail(db, parsed);
+	storedMessageIds.push(parsed.messageId);
+	check('a new message_id is stored', stored.created);
+	equal('direction is inbound', stored.email.direction, 'inbound');
+	equal('body_html is sanitized on the way in', stored.email.bodyHtml, '<p>hi</p><img src="x">');
+	equal('body_text is stored as-is', stored.email.bodyText, '  hi\n\nplain  ');
+	equal('from_email', stored.email.fromEmail, 'sender@example.com');
+	equal('to_emails round-trips as JSON', stored.email.toEmails, ['owner@example.com']);
+	equal(
+		'received_at from the Date: header',
+		stored.email.receivedAt.toISOString(),
+		'2026-07-25T15:15:31.000Z'
+	);
+	check('a thread was created for it', typeof stored.email.threadId === 'string');
+
+	const { rows: threadRowsBefore } = await client.execute({
+		sql: 'select count(*) as n from threads where id = ?',
+		args: [stored.email.threadId]
+	});
+	equal('exactly one thread row', Number(threadRowsBefore[0].n), 1);
+
+	// A redelivery of the same message_id must be a no-op, not a 500 — and must
+	// not leave an orphan thread behind either, so the whole-table count is what
+	// gets compared.
+	const threadCount = async () =>
+		Number((await client.execute('select count(*) as n from threads')).rows[0].n);
+	const threadsBeforeReplay = await threadCount();
+	const replay = await storeInboundEmail(db, parsed);
+	check('redelivery is detected as a duplicate', !replay.created);
+	equal('duplicate returns the original row', replay.email.id, stored.email.id);
+
+	const { rows: emailRows } = await client.execute({
+		sql: 'select count(*) as n from emails where message_id = ?',
+		args: [parsed.messageId]
+	});
+	equal('still exactly one email row', Number(emailRows[0].n), 1);
+
+	equal('the duplicate left no orphan thread', await threadCount(), threadsBeforeReplay);
 } finally {
+	if (storedMessageIds.length > 0) {
+		const doomed = await db
+			.select({ id: emails.id, threadId: emails.threadId })
+			.from(emails)
+			.where(inArray(emails.messageId, storedMessageIds));
+		await db.delete(emails).where(inArray(emails.messageId, storedMessageIds));
+		const threadIds = doomed.map((row) => row.threadId);
+		if (threadIds.length > 0) {
+			await db.delete(threads).where(inArray(threads.id, threadIds));
+		}
+		console.log(
+			`cleanup: ${doomed.length} email row(s) and ${threadIds.length} thread row(s) removed`
+		);
+	}
+
 	if (createdEmails.length > 0) {
 		await db.delete(contacts).where(inArray(contacts.email, createdEmails));
 		const { rows } = await client.execute({
