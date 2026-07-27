@@ -14,7 +14,7 @@ npm run check 2>&1 | tail -5 | sed -E 's/^[0-9]+ //'
 > svelte-kit sync && svelte-check --tsconfig ./tsconfig.json
 
 START "/Users/bloodintern1/Desktop/Resend-Email-Inbox"
-COMPLETED 1192 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
+COMPLETED 1196 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
 ```
 
 ```bash
@@ -42,7 +42,7 @@ npm run build 2>&1 | grep -E '^✓ built|^Error:' | sed -E 's/[0-9]+(\.[0-9]+)?(
 Verified end-to-end against the live Turso database via a standalone script (same pattern as prior stories' verify-*.mts scripts), then manually against a running dev server via curl to confirm cookie attributes.
 
 ```bash
-node --env-file=.env node_modules/.bin/tsx src/lib/server/auth/verify-verify-code.mts 2>&1 | tail -25
+node --env-file=.env node_modules/.bin/tsx src/lib/server/auth/verify-verify-code.mts 2>&1 | tail -28
 ```
 
 ```output
@@ -50,6 +50,8 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/auth/verify-verify-cod
   PASS: freshly seeded code is unused
   PASS: freshly seeded code is unexpired
   PASS: hashing the correct code matches the stored hash
+  PASS: markAuthCodeUsed consumes the unused code and returns the row
+  PASS: a second markAuthCodeUsed on the same code returns undefined — the endpoint must reject rather than mint a second session
   PASS: code is marked used_at after successful verification
   PASS: a valid sessions row exists for the new session token hash
   PASS: a code cannot be re-verified: used_at is set, so a second attempt would be rejected as "already used"
@@ -61,7 +63,8 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/auth/verify-verify-cod
   PASS: attempt_count is 4 after 4 incorrect attempt(s)
   PASS: code is still active after 4 failed attempts
   PASS: attempt_count reaches 5 after the 5th incorrect attempt
-  PASS: code is invalidated (used_at set) once attempt_count hits 5
+  PASS: code is killed (expires_at pulled back) once attempt_count hits 5
+  PASS: a code burned by wrong guesses never gets used_at set — it was never redeemed
 4. Expired code is rejected without incrementing attempts:
   PASS: the expired row is the latest row
   PASS: the seeded row is indeed expired
@@ -70,7 +73,12 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/auth/verify-verify-cod
 Cleaning up test rows...
   PASS: all test auth_codes rows were cleaned up
 
-20 passed, 0 failed
+23 passed, 0 failed
 ```
 
-Manual live verification (not re-executed by `showboat verify` since it requires a running dev server plus DB seed/cleanup around it): with the dev server running, a code (654321) was seeded directly via createAuthCode/invalidateActiveAuthCodes. POSTing an incorrect code to /api/auth/verify-code returned `400 {"error":"Incorrect code."}` with no cookie set. POSTing the correct code returned `200 {"ok":true}` with a `set-cookie: session=<64-hex-char token>; Path=/; Expires=...; HttpOnly; Secure; SameSite=Lax` header — confirming the cookie is httpOnly, Secure, and SameSite=Lax as required. Re-POSTing the same correct code afterward returned `400 {"error":"This code has already been used. Please request a new code."}`, confirming a code cannot be reused. The seeded test row was deleted by id afterward to leave the live Turso DB clean.
+Manual live verification (not re-executed by `showboat verify` since it requires a running dev server plus DB seed/cleanup around it), against the live Turso DB with every test row deleted afterward:
+
+- **Success path:** a code (654321) was seeded directly. POSTing an incorrect code returned `400 {"error":"Incorrect code."}` with no cookie set. POSTing the correct code returned `200 {"ok":true}` with `set-cookie: session=<64-hex-char token>; Path=/; Expires=...; HttpOnly; Secure; SameSite=Lax` — httpOnly, Secure and SameSite=Lax as required. Re-POSTing the same correct code returned `400 {"error":"This code has already been used. Please request a new code."}`: a redeemed code cannot be reused, and that error copy is now reserved for genuinely redeemed codes.
+- **5-attempt lockout reports the accurate reason:** a second code (123456) was seeded and given five wrong guesses — `Incorrect code.` x4, then `Too many incorrect attempts. Please request a new code.` on the fifth. Submitting the *correct* code afterward returned `400 {"error":"This code has expired. Please request a new code."}`, and a direct query confirmed `used_at` on that row is still `null`. Before this change the lockout stamped `used_at`, so the same request would have claimed the code was "already used" — wrong for a code the user never successfully entered, and it also destroyed `used_at`'s meaning as the audit answer to "was this code ever redeemed?".
+
+Note: cleanup also truncated the `sessions` table, which held two rows from these manual runs. No real user sessions exist yet (the login UI lands in US-B04), so this was safe here — but future stories should delete session rows by token hash rather than clearing the table.

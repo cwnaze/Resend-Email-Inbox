@@ -18,11 +18,28 @@
 //   - Failed verification attempts increment `attempt_count`; 5 failures
 //     invalidates the code (US-B03) — that threshold check lives in the
 //     verify-code endpoint itself, this module just persists the count.
-import { and, count, desc, eq, gt, gte, isNull } from 'drizzle-orm';
-import type { db as dbSingleton } from '../db';
+import { createHash } from 'node:crypto';
+import { and, count, desc, eq, gt, gte, isNull, sql } from 'drizzle-orm';
 import { authCodes } from '../db/schema';
+import type { Database } from '../db/types';
 
-export type Database = typeof dbSingleton;
+/**
+ * Hashes a plaintext login code for storage/comparison. The only hash function
+ * that may ever touch `auth_codes.code_hash` — the entire security property is
+ * that the request-code and verify-code paths hash identically, and a divergence
+ * between two copies of this one-liner would fail silently and permanently as
+ * "wrong code".
+ *
+ * Deliberately a plain SHA-256 rather than an HMAC keyed with a server secret:
+ * a 6-digit code has only a 10^6 preimage space, so an attacker holding the
+ * `auth_codes` table can brute-force the hash trivially either way. The
+ * 10-minute TTL and 5-attempt cap are what make that mostly theoretical; if we
+ * ever want the hash column to be worthless on its own, switch this to an HMAC
+ * (both call sites go through here, so it's a one-line change).
+ */
+export function hashAuthCode(code: string): string {
+	return createHash('sha256').update(code).digest('hex');
+}
 
 /** Inserts a new auth_codes row and returns it. */
 export async function createAuthCode(database: Database, codeHash: string, expiresAt: Date) {
@@ -47,25 +64,61 @@ export async function getActiveAuthCode(database: Database, now: Date = new Date
 }
 
 /**
- * Marks every currently active (unused, unexpired) auth code as used, so a
- * newly requested code becomes the only active one. Returns the number of
- * rows invalidated.
+ * Expires every currently active (unused, unexpired) auth code, so a newly
+ * requested code becomes the only active one. Returns the number of rows
+ * superseded.
+ *
+ * This pulls `expires_at` back to `now` rather than setting `used_at`, so
+ * "superseded because a newer code was requested" stays distinguishable from
+ * "consumed by a successful login" (`used_at IS NOT NULL`). That keeps
+ * `auth_codes` answerable for "was this code ever redeemed?" (audit, debugging
+ * a login complaint) and lets US-B03 report the accurate reason — a superseded
+ * code reads as expired, not as already used.
  */
 export async function invalidateActiveAuthCodes(database: Database, now: Date = new Date()) {
 	const rows = await database
 		.update(authCodes)
-		.set({ usedAt: now })
+		.set({ expiresAt: now })
 		.where(and(isNull(authCodes.usedAt), gt(authCodes.expiresAt, now)))
 		.returning({ id: authCodes.id });
 	return rows.length;
 }
 
-/** Marks a specific auth code row as used (successful verification). */
+/**
+ * Kills a single auth code by pulling `expires_at` back to `now`, without
+ * touching `used_at`. Same mechanism as `invalidateActiveAuthCodes`, scoped to
+ * one row.
+ *
+ * US-B03 uses this for the 5-attempt lockout: a code burned by wrong guesses
+ * was never redeemed, so stamping `used_at` on it would both corrupt the
+ * "was this code ever redeemed?" answer and make verify-code report "already
+ * used" for a code the user never successfully entered. Expiring it produces
+ * the accurate error copy and keeps `used_at IS NOT NULL` meaning exactly one
+ * thing.
+ */
+export async function expireAuthCode(database: Database, id: string, now: Date = new Date()) {
+	const [row] = await database
+		.update(authCodes)
+		.set({ expiresAt: now })
+		.where(eq(authCodes.id, id))
+		.returning();
+	return row;
+}
+
+/**
+ * Marks a specific auth code row as used (successful verification).
+ *
+ * The `used_at IS NULL` guard makes this an atomic compare-and-swap: exactly
+ * one caller can consume a given code. A returned `undefined` means the code
+ * was already used by someone else and this caller must reject — without that,
+ * two requests carrying the same correct code could both pass a
+ * read-then-check and both mint a session (US-B03).
+ */
 export async function markAuthCodeUsed(database: Database, id: string, usedAt: Date = new Date()) {
 	const [row] = await database
 		.update(authCodes)
 		.set({ usedAt })
-		.where(eq(authCodes.id, id))
+		.where(and(eq(authCodes.id, id), isNull(authCodes.usedAt)))
 		.returning();
 	return row;
 }
@@ -99,16 +152,32 @@ export async function getLatestAuthCode(database: Database) {
 	return rows[0] ?? null;
 }
 
-/** Increments the failed-attempt counter for a specific auth code row. */
+/**
+ * Deletes a single auth_codes row by id.
+ *
+ * Used to roll back a just-created code when the email carrying it could not be
+ * sent: the plaintext exists only in the request that generated it, so a row
+ * whose code was never delivered is unusable — leaving it behind would keep
+ * consuming a rate-limit slot and (having superseded the previous code) leave
+ * the user with no valid code at all.
+ */
+export async function deleteAuthCode(database: Database, id: string) {
+	await database.delete(authCodes).where(eq(authCodes.id, id));
+}
+
+/**
+ * Increments the failed-attempt counter for a specific auth code row.
+ *
+ * The arithmetic happens in SQL so the whole thing is one atomic statement.
+ * A JS read-modify-write would let two concurrent wrong-code submissions both
+ * read the same count and both write count+1, and the lost update would let an
+ * attacker walk past US-B03's 5-attempt lockout by guessing in parallel —
+ * concurrent requests being exactly the attacker's access pattern.
+ */
 export async function incrementAuthCodeAttempts(database: Database, id: string) {
-	const current = await database
-		.select({ attemptCount: authCodes.attemptCount })
-		.from(authCodes)
-		.where(eq(authCodes.id, id));
-	const next = (current[0]?.attemptCount ?? 0) + 1;
 	const [row] = await database
 		.update(authCodes)
-		.set({ attemptCount: next })
+		.set({ attemptCount: sql`${authCodes.attemptCount} + 1` })
 		.where(eq(authCodes.id, id))
 		.returning();
 	return row;

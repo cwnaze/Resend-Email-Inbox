@@ -15,20 +15,23 @@
 // independently of an HTTP server. All rows created are cleaned up by id
 // before exiting, so re-running (e.g. via `showboat verify`) starts from
 // the same state every time.
-import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
+import { randomInt, timingSafeEqual } from 'node:crypto';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import * as schema from '../db/schema.ts';
 import {
 	createAuthCode,
+	expireAuthCode,
 	getLatestAuthCode,
+	hashAuthCode,
 	incrementAuthCodeAttempts,
 	markAuthCodeUsed
 } from './auth-codes.ts';
 import {
 	createSession,
 	deleteSessionByTokenHash,
-	getValidSessionByTokenHash
+	getValidSessionByTokenHash,
+	hashSessionToken
 } from './sessions-store.ts';
 
 const url = process.env.TURSO_DATABASE_URL;
@@ -59,10 +62,6 @@ function generateCode(): string {
 	return randomInt(0, 1_000_000).toString().padStart(6, '0');
 }
 
-function hashCode(code: string): string {
-	return createHash('sha256').update(code).digest('hex');
-}
-
 function hashesMatch(a: string, b: string): boolean {
 	const bufA = Buffer.from(a, 'hex');
 	const bufB = Buffer.from(b, 'hex');
@@ -72,7 +71,7 @@ function hashesMatch(a: string, b: string): boolean {
 
 async function seedCode(expiresInMs: number) {
 	const code = generateCode();
-	const row = await createAuthCode(db, hashCode(code), new Date(Date.now() + expiresInMs));
+	const row = await createAuthCode(db, hashAuthCode(code), new Date(Date.now() + expiresInMs));
 	createdAuthCodeIds.push(row.id);
 	return { code, row };
 }
@@ -97,13 +96,19 @@ async function main() {
 		assert(latest!.usedAt === null, 'freshly seeded code is unused');
 		assert(latest!.expiresAt.getTime() > Date.now(), 'freshly seeded code is unexpired');
 		assert(
-			hashesMatch(hashCode(code), latest!.codeHash),
+			hashesMatch(hashAuthCode(code), latest!.codeHash),
 			'hashing the correct code matches the stored hash'
 		);
 
-		await markAuthCodeUsed(db, row.id);
+		const consumed = await markAuthCodeUsed(db, row.id);
+		assert(consumed !== undefined, 'markAuthCodeUsed consumes the unused code and returns the row');
+		const reconsumed = await markAuthCodeUsed(db, row.id);
+		assert(
+			reconsumed === undefined,
+			'a second markAuthCodeUsed on the same code returns undefined — the endpoint must reject rather than mint a second session'
+		);
 		const sessionToken = 'test-session-token-' + row.id;
-		const tokenHash = hashCode(sessionToken);
+		const tokenHash = hashSessionToken(sessionToken);
 		createdSessionTokenHashes.push(tokenHash);
 		await createSession(db, tokenHash, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
 
@@ -128,7 +133,7 @@ async function main() {
 		const { code, row } = await seedCode(600_000);
 		const wrongCode = code === '000000' ? '111111' : '000000';
 		assert(
-			!hashesMatch(hashCode(wrongCode), hashCode(code)),
+			!hashesMatch(hashAuthCode(wrongCode), hashAuthCode(code)),
 			'the chosen wrong code does not hash-match the real code'
 		);
 
@@ -141,9 +146,16 @@ async function main() {
 
 		const fifth = await incrementAuthCodeAttempts(db, row.id);
 		assert(fifth?.attemptCount === 5, 'attempt_count reaches 5 after the 5th incorrect attempt');
-		await markAuthCodeUsed(db, row.id);
+		await expireAuthCode(db, row.id);
 		latest = await getLatestAuthCode(db);
-		assert(latest?.usedAt !== null, 'code is invalidated (used_at set) once attempt_count hits 5');
+		assert(
+			latest !== null && latest.expiresAt.getTime() <= Date.now(),
+			'code is killed (expires_at pulled back) once attempt_count hits 5'
+		);
+		assert(
+			latest?.usedAt === null,
+			'a code burned by wrong guesses never gets used_at set — it was never redeemed'
+		);
 	}
 
 	console.log('4. Expired code is rejected without incrementing attempts:');
