@@ -16,8 +16,8 @@ git --no-pager diff --stat main -- src
  src/lib/server/email/resend.ts                    |  43 +++++++
  src/lib/server/inbound/attachments.ts             | 138 ++++++++++++++++++++
  src/lib/server/inbound/verify-inbound-parse.mts   | 150 ++++++++++++++++++++++
- src/routes/api/webhooks/resend-inbound/+server.ts |  33 ++++-
- 5 files changed, 395 insertions(+), 3 deletions(-)
+ src/routes/api/webhooks/resend-inbound/+server.ts |  35 ++++-
+ 5 files changed, 396 insertions(+), 4 deletions(-)
 ```
 
 The provider hops are **injected**, not imported: `server/email/resend.ts` and `server/r2` both read env at module scope, so keeping them out of `inbound/attachments.ts` leaves it drivable from a standalone tsx script (same rule as `parse.ts`/`store.ts`). The endpoint wires the real ones.
