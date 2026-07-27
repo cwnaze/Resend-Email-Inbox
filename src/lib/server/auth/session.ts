@@ -78,10 +78,14 @@ export async function validateSession(
 	if (elapsed >= SESSION_REFRESH_THRESHOLD_MS) {
 		const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
 		const refreshed = await extendSessionExpiry(database, tokenHash, expiresAt);
-		if (refreshed) {
-			setSessionCookie(cookies, token, expiresAt);
-			return refreshed;
-		}
+		// `extendSessionExpiry` is an UPDATE ... RETURNING, so `undefined` means no
+		// row matched — the session was deleted between the read above and this
+		// write (a concurrent logout, or a revocation). Reject rather than falling
+		// back to the row we read, which no longer exists; same rule as
+		// `markAuthCodeUsed` returning `undefined` in verify-code.
+		if (!refreshed) return null;
+		setSessionCookie(cookies, token, expiresAt);
+		return refreshed;
 	}
 
 	return session;
