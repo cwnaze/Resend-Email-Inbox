@@ -77,10 +77,16 @@ export async function verifySvixRequest(request: Request): Promise<VerifyResult>
 		headers[name] = value;
 	}
 
+	// Resolved *outside* the try below: a missing secret is a server
+	// misconfiguration, not a bad caller. Letting it throw surfaces a 500 (which
+	// Resend retries) instead of a 401 that would silently drop every inbound
+	// email while looking like an attacker probing the endpoint.
+	const wh = getWebhook();
+
 	const rawBody = await request.text();
 
 	try {
-		const payload = getWebhook().verify(rawBody, headers);
+		const payload = wh.verify(rawBody, headers);
 		return { ok: true, payload, rawBody };
 	} catch (err) {
 		return {
@@ -182,3 +188,58 @@ build OK
 ## Outstanding manual step
 
 `RESEND_INBOUND_WEBHOOK_SECRET` is documented in `.env.example`; the real value comes from the Resend dashboard's webhook config (`whsec_…`) once the inbound webhook URL is registered against the deployed `/api/webhooks/resend-inbound`. That registration, and adding the var to Vercel project settings, is a project-owner step — same pattern as the Turso/R2/Resend credentials in US-A01/A02/B02.
+
+## Post-merge: verified against production
+
+The self-contained block above proves the verification logic on a throwaway
+secret and a local dev server. Recorded separately here (as prose, not an
+executable block, since it depends on the gitignored `.env` and a live
+deployment — an `exec` block would make `showboat verify` fail for anyone
+lacking both) is the same five-case suite run against the real deployment at
+`https://mail.caseynazelrod.com`, with the genuine `whsec_…` secret from the
+Resend dashboard in both `.env` and Vercel project settings:
+
+    WEBHOOK_BASE_URL=https://mail.caseynazelrod.com \
+      node --env-file=.env node_modules/.bin/tsx \
+      src/lib/server/webhooks/verify-inbound-webhook.mts
+
+    PASS  valid signature -> 200 (expected 200)
+    PASS  tampered body, original signature -> 401 (expected 401)
+    PASS  signature from a different secret -> 401 (expected 401)
+    PASS  no svix headers -> 401 (expected 401)
+    PASS  missing svix-id header -> 401 (expected 401)
+
+    All webhook signature checks passed
+
+The `valid signature -> 200` case is what the local run cannot establish: it
+passes only if the secret held by Vercel and the secret used to sign are the
+same value. A first attempt failed here on a mistyped secret, which is the
+failure this case exists to catch.
+
+Note on DNS: the app is served from the `mail.` subdomain while Resend owns
+`send.`, `links.`, and the apex MX for receiving — so **inbound addresses are
+on the apex** (`something@caseynazelrod.com`), not `@mail.`. The two never
+collide, but had the app and the receiving MX shared one name, a CNAME to
+Vercel would have blocked the MX records outright (a CNAME must be the only
+record at its name).
+
+### Superseding the outstanding manual step above
+
+The registration step listed in the previous section is **done**: the webhook is
+registered in the Resend dashboard against
+`POST https://mail.caseynazelrod.com/api/webhooks/resend-inbound` for the
+inbound email event, and `RESEND_INBOUND_WEBHOOK_SECRET` is set in Vercel.
+
+One gap remains, and it is not something this story's tests can close: every
+check above is this repo's own signing code talking to its own endpoint. That a
+real Resend delivery arrives and verifies — i.e. that the apex MX is receiving
+and that Resend's signature format matches `svix`'s in practice — is confirmed
+only by sending a real email and observing a 200 in the Vercel function logs.
+US-E02 should capture that first real payload before writing a parser against
+assumed field shapes; the stand-in object in
+`verify-inbound-webhook.mts` (`{ type, data: { from, subject } }`) is a
+placeholder, not observed truth.
+
+Also carried into US-E02: a genuine `svix-id` replayed inside the Svix
+timestamp tolerance verifies twice. Ingestion needs an idempotency key (the
+`svix-id` or Resend's message id) or a provider retry will duplicate a thread.
