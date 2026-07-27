@@ -186,8 +186,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 12,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Login page at /login: centered app mark + single 'Send me a code' button (no email input), transitions to a 6-digit monospace code step on success. Incorrect codes show an inline danger-color error without navigating away; a valid code redirects to /inbox. Added retryAfterMinutes to POST /api/auth/request-code's 429 response (new getOldestAuthCodeRequestSince query helper) so the UI can show 'try again in N minutes'. Verified in browser via rodney with fetch mocked for request-code/verify-code (no real Resend account provisioned in this dev env \u2014 same outstanding manual step as US-B02/B03); the underlying endpoints' real behavior was already verified via curl in those stories. See docs/demos/US-B04.md."
     },
     {
       "id": "US-B05",

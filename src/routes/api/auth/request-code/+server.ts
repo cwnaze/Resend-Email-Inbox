@@ -11,6 +11,7 @@ import { db } from '$lib/server/db';
 import {
 	countAuthCodeRequestsSince,
 	createAuthCode,
+	getOldestAuthCodeRequestSince,
 	invalidateActiveAuthCodes
 } from '$lib/server/auth/auth-codes';
 import { sendAuthCodeEmail } from '$lib/server/email/resend';
@@ -34,7 +35,16 @@ export const POST: RequestHandler = async () => {
 
 	const recentRequestCount = await countAuthCodeRequestsSince(db, windowStart);
 	if (recentRequestCount >= RATE_LIMIT_MAX_REQUESTS) {
-		return json({ error: 'Too many code requests. Please try again later.' }, { status: 429 });
+		const oldestRequestAt = await getOldestAuthCodeRequestSince(db, windowStart);
+		const retryAtMs = (oldestRequestAt?.getTime() ?? now.getTime()) + RATE_LIMIT_WINDOW_MS;
+		const retryAfterMinutes = Math.max(1, Math.ceil((retryAtMs - now.getTime()) / 60_000));
+		return json(
+			{
+				error: 'Too many code requests. Please try again later.',
+				retryAfterMinutes
+			},
+			{ status: 429 }
+		);
 	}
 
 	await invalidateActiveAuthCodes(db, now);

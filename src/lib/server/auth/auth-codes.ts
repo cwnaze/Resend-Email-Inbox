@@ -87,6 +87,22 @@ export async function countAuthCodeRequestsSince(database: Database, windowStart
 }
 
 /**
+ * Returns the `createdAt` of the oldest auth_codes row created at/after
+ * `windowStart`, or `null` if none exist in the window. US-B04 uses this to
+ * compute a "try again in N minutes" message for a rate-limited request —
+ * the oldest request in the window is the one that will next age out.
+ */
+export async function getOldestAuthCodeRequestSince(database: Database, windowStart: Date) {
+	const rows = await database
+		.select({ createdAt: authCodes.createdAt })
+		.from(authCodes)
+		.where(gte(authCodes.createdAt, windowStart))
+		.orderBy(authCodes.createdAt)
+		.limit(1);
+	return rows[0]?.createdAt ?? null;
+}
+
+/**
  * Returns the single most-recently-created auth_codes row, regardless of
  * used/expired state, or `null` if none exist. US-B03 (verify-code) uses
  * this — rather than `getActiveAuthCode` — because it needs to distinguish
