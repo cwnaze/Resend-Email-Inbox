@@ -86,6 +86,19 @@ export async function countAuthCodeRequestsSince(database: Database, windowStart
 	return rows[0]?.value ?? 0;
 }
 
+/**
+ * Returns the single most-recently-created auth_codes row, regardless of
+ * used/expired state, or `null` if none exist. US-B03 (verify-code) uses
+ * this — rather than `getActiveAuthCode` — because it needs to distinguish
+ * "no code exists", "code exists but is used", and "code exists but is
+ * expired" so it can return the right error message and correctly skip
+ * incrementing `attempt_count` against a dead (used/expired) code.
+ */
+export async function getLatestAuthCode(database: Database) {
+	const rows = await database.select().from(authCodes).orderBy(desc(authCodes.createdAt)).limit(1);
+	return rows[0] ?? null;
+}
+
 /** Increments the failed-attempt counter for a specific auth code row. */
 export async function incrementAuthCodeAttempts(database: Database, id: string) {
 	const current = await database
