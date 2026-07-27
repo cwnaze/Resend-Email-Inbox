@@ -12,6 +12,11 @@
 - `npm run build` actually imports every `+server.ts`/`+page.server.ts` route module during SvelteKit's postbuild analysis step (to detect exported HTTP methods) — a module that throws at import time if an env var is missing (the fail-fast pattern used by `db`, `r2`, and now `email/resend`) will crash `npm run build`, not just `npm run dev`. Any such module needs at least a placeholder value for its required env vars in `.env`, even if the real credential/account isn't provisioned yet in this dev environment.
 - For an endpoint that both rate-limits and has an external side effect (DB write, third-party API call), check the rate limit first and return early (429) before doing any write/send — this keeps a rate-limited request from leaving side effects, and keeps the rate-limit path itself deterministic/testable without touching the external API.
 
+- Webhook/signature verification covers the *raw* request bytes: never `request.json()` a signed request before verifying (a `Request` body reads once, and a re-serialized parse won't match). Read text, verify, then parse.
+- For any verify-then-act boundary, return a *discriminated* result where the payload exists only on the success branch (`{ ok: true, payload } | { ok: false, reason }`) — that makes "acted on unverified data" a type error rather than a review question.
+- Failure detail from an auth/signature check goes to the server log, never the response body: the client gets a bare status. A reason string handed to an unauthenticated caller is a forging aid.
+- A showboat `exec` block that needs a running dev server plus a secret should be self-contained — export a throwaway secret inline, start the server with it in the environment, `trap`-kill on exit — so `showboat verify` doesn't depend on the gitignored `.env`.
+
 ## Progress Log
 
 ## [2026-07-22] - US-A00
@@ -223,4 +228,19 @@
   - Such a script must live inside the repo: one placed in an external tmp dir fails with `ERR_MODULE_NOT_FOUND` on `@libsql/client` even when run with the repo as cwd (module resolution is relative to the script's own path, not cwd).
   - To browser-test an authenticated page, don't try to set the session cookie directly (rodney has no cookie command) — seed a known code hash into `auth_codes` with `hashAuthCode`, stub only `/api/auth/request-code` in-page, and let the real `verify-code` mint the session. That also means route protection is being exercised against a genuinely-issued cookie rather than a hand-made one.
   - The login page's "Send me a code" is `type="button"`, not `type="submit"` — a rodney `click "button[type=submit]"` selector will time out on `/login`.
+---
+
+## [2026-07-27] - US-E01
+- Added the Svix signature gate in front of inbound email ingestion, plus the `svix` dependency.
+- `src/lib/server/webhooks/svix.ts` (new): `verifySvixRequest(request)` reads the three Svix headers, reads the body as raw text, verifies with a memoized `Webhook` built from `RESEND_INBOUND_WEBHOOK_SECRET`, and returns a discriminated `{ ok: true, payload, rawBody } | { ok: false, reason }`.
+- `src/routes/api/webhooks/resend-inbound/+server.ts` (new): `POST` handler. On failure it `console.warn`s the reason and returns a bare `401`; on success it currently just returns `{ ok: true }` — US-E02 hangs parsing/persistence off `result.payload` there.
+- `src/lib/server/webhooks/verify-inbound-webhook.mts` (new): standalone HTTP smoke test driving the real endpoint with five request shapes, using `svix`'s own `sign()` for the positive case.
+- `.env.example`: documented `RESEND_INBOUND_WEBHOOK_SECRET`. A throwaway generated `whsec_` value was added to the local gitignored `.env` so the endpoint is testable before the real dashboard secret exists.
+- Verified: 5/5 checks pass against a running dev server (valid signature 200; tampered body + genuine signature 401; signature from a different secret 401; no svix headers 401; missing svix-id 401). `npm run check` 0 errors, `npm run lint` clean, `npm run build` succeeds. docs/demos/US-E01.md, `showboat verify` exits 0.
+- **Learnings for future iterations:**
+  - A webhook signature covers the *raw request bytes*. Never `request.json()` a signed request before verifying — a `Request` body can only be consumed once, and a re-serialized parse will not match the signature. Read text, verify, then parse the text (or use the verified payload the library returns).
+  - Returning a *discriminated* verification result (payload present only on the success branch) rather than `{ verified: boolean, payload }` makes "persisted an unverified body" a type error instead of a code-review question. Worth reusing for any verify-then-act boundary.
+  - Failure detail from an auth/signature check belongs in the server log, not the response. The client gets a bare status; a reason string is a forging aid.
+  - The lazy-env-read pattern established for `email/resend.ts` applies to *any* server module reachable from a route: `npm run build` imports every `+server.ts` for HTTP-method detection, so import-time secret checks break the build/CI, not just dev.
+  - For a showboat block that needs a running server plus a secret, make it self-contained: export a throwaway secret inline, start the dev server with it in the environment, `trap`-kill on exit. This keeps `showboat verify` reproducible without depending on the gitignored `.env`.
 ---
