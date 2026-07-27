@@ -5,12 +5,10 @@
 	}
 
 	const { rows = 3 }: Props = $props();
-
-	const rowIndices = $derived(Array.from({ length: rows }, (_, i) => i));
 </script>
 
 <div class="flex flex-col gap-2" role="status" aria-label="Loading">
-	{#each rowIndices as i (i)}
-		<div class="h-12 animate-pulse rounded bg-surface"></div>
+	{#each { length: rows } as _, i (i)}
+		<div class="h-12 rounded bg-surface motion-safe:animate-pulse"></div>
 	{/each}
 </div>

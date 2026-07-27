@@ -7,8 +7,8 @@
 	const { message, onRetry }: Props = $props();
 </script>
 
-<div class="flex items-center gap-3 font-sans text-sm text-danger" role="alert">
-	<span>{message}</span>
+<div class="flex items-center gap-3 font-sans text-sm text-danger">
+	<span role="alert">{message}</span>
 	{#if onRetry}
 		<button
 			type="button"
