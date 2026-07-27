@@ -11,10 +11,8 @@
 // has no `$env/dynamic/private` dependency and can be exercised by the
 // standalone `verify-auth-sessions.mts` script as well as real app code.
 import { and, eq, gt } from 'drizzle-orm';
-import type { db as dbSingleton } from '../db';
 import { sessions } from '../db/schema';
-
-export type Database = typeof dbSingleton;
+import type { Database } from '../db/types';
 
 /** Inserts a new sessions row (given the hash of the raw session token) and returns it. */
 export async function createSession(database: Database, tokenHash: string, expiresAt: Date) {
@@ -22,7 +20,11 @@ export async function createSession(database: Database, tokenHash: string, expir
 	return row;
 }
 
-/** Returns the session row for a token hash if it exists and is not expired. */
+/**
+ * Returns the session row for a token hash if it exists and is not expired.
+ * `sessions.token_hash` carries a unique index (`sessions_token_hash_unique`),
+ * so at most one row can match; `.limit(1)` just makes that explicit.
+ */
 export async function getValidSessionByTokenHash(
 	database: Database,
 	tokenHash: string,
@@ -31,7 +33,8 @@ export async function getValidSessionByTokenHash(
 	const rows = await database
 		.select()
 		.from(sessions)
-		.where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, now)));
+		.where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, now)))
+		.limit(1);
 	return rows[0] ?? null;
 }
 
