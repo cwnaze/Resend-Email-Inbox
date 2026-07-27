@@ -36,7 +36,7 @@
 			/>
 		</form>
 
-		<form method="POST" action="/logout" class="shrink-0">
+		<form method="POST" action="/api/auth/logout" class="shrink-0">
 			<button
 				type="submit"
 				class="rounded border border-border bg-surface px-3 py-1.5 text-sm text-text-primary transition-colors duration-fast ease-standard hover:border-danger hover:text-danger"

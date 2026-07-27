@@ -1,13 +1,19 @@
 import { redirect } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
-import { hasSessionCookie } from '$lib/server/auth/session';
+import { clearSessionCookie, validateSession } from '$lib/server/auth/session';
+import { db } from '$lib/server/db';
 
-// Protects every route under the (app) group. Full session validation
-// (hashing the cookie token and checking it against the `sessions` table)
-// lands in US-B05 once auth is implemented; for now this scaffolds the
-// redirect behavior so mailbox routes are protected from day one.
+// Single choke point protecting every route under the (app) group (US-A03,
+// real validation as of US-B05): hash the cookie token, look it up in
+// `sessions`, reject if missing/unknown/expired. New protected pages added
+// under (app)/ inherit this — never add a second parallel check.
 export const load: LayoutServerLoad = async ({ cookies }) => {
-	if (!hasSessionCookie(cookies)) {
+	const session = await validateSession(db, cookies);
+
+	if (!session) {
+		// Clear the cookie on the way out so a stale/expired token isn't re-sent on
+		// every subsequent request, and so the browser stops looking logged in.
+		clearSessionCookie(cookies);
 		redirect(302, '/login');
 	}
 };
