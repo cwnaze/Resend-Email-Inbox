@@ -41,7 +41,7 @@ Two quirks in the *real* fetched record, both now covered by fixtures:
 - `src/routes/api/webhooks/resend-inbound/+server.ts` — verify → parse → fetch → parse → upsert.
 - `src/lib/server/inbound/verify-inbound-parse.mts` (new) and `src/lib/server/webhooks/verify-inbound-webhook.mts` (extended) — verification scripts.
 
-## Parsing + contact upsert: 42 checks
+## Parsing + contact upsert: 44 checks
 
 Parsing runs against fixtures (one of them a redacted **real** delivery, header quirks verbatim).
 The upsert runs against the live Turso DB — there is no separate test database — and deletes
@@ -82,6 +82,12 @@ parseReceivedEmail — reply with no display name
   ok   In-Reply-To
   ok   References split on whitespace
   ok   cc trimmed, empties dropped
+
+parseReceivedEmail — JSON array-encoded headers
+  ok   array-encoded References decoded, not split as JSON text
+  ok   array-encoded In-Reply-To takes the first value
+
+parseReceivedEmail — reply, remaining fields
   ok   null html stays null
   ok   unparseable Date: falls back to created_at
 
@@ -105,7 +111,7 @@ upsertContactFromInbound — live DB
 
 cleanup: 2 row(s) removed, 0 remaining
 
-42/42 checks passed
+44/44 checks passed
 ```
 
 ## End to end against a real inbound email
@@ -142,6 +148,7 @@ PASS  sender upserted into contacts -> 1 row(s) (expected 1)
 PASS  redelivery of the same email is accepted -> 200 (expected 200)
 PASS  redelivery did not duplicate -> 1 row(s) (expected 1)
 PASS  non-received event type is ignored -> 200 (expected 200)
+PASS  permanently-unfetchable email_id is ignored, not retried -> 200 (expected 200)
 All webhook checks passed
 ```
 
