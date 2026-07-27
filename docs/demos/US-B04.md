@@ -12,7 +12,7 @@ npm run check 2>&1 | grep -E 'FILES|ERRORS' | sed -E 's/^[0-9]+/<ts>/'
 ```
 
 ```output
-<ts> COMPLETED 1192 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
+<ts> COMPLETED 1196 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
 ```
 
 ```bash
@@ -37,49 +37,51 @@ npm run build 2>&1 | grep -E '✓ built|error' | sed -E 's/[0-9]+(\.[0-9]+)?(ms|
 ✓ built in <duration>
 ```
 
-Browser verification (rodney, dev server on :5173). The real Resend account isn't provisioned in this dev environment (placeholder API key, same outstanding manual step noted since US-B02/US-B03), so the request-code/verify-code fetch calls are patched in-page (window.fetch) to return the same success/error shapes the real endpoints return — this exercises the login page's own state machine and DOM, while the endpoints' actual behavior (hashing, rate limiting, cookie issuance) is already verified end-to-end via curl in docs/demos/US-B02.md and docs/demos/US-B03.md.
+Browser verification (rodney, dev server on :5199). Unlike the first pass on this story, a real Resend API key is now provisioned locally, so `/api/auth/verify-code` was exercised **unmocked** against the live Turso DB with a seeded known code (`777777`). Only `/api/auth/request-code` is stubbed in-page (`window.fetch`) for the steps that just need to reach the code-entry screen — so those steps don't send another real email to `AUTH_RECIPIENT_EMAIL`. The rate-limit step below is unmocked too. Screenshots and assertions are from that run; the endpoints' own behavior is additionally covered in docs/demos/US-B02.md and docs/demos/US-B03.md.
 
-Step 1 — initial /login render: centered app mark + single 'Send me a code' button, no email input anywhere on the page.
+Step 1 — initial /login render: centered app mark (now an `<h1>`, not a `<span>`) plus a single 'Send me a code' button. No email input anywhere on the page.
 
-```bash {image}
-![Login page request step - centered app mark and single Send me a code button, no email input](docs/demos/us-b04-01-request-step.png)
-```
+![Login page request step - centered app mark and single Send me a code button, no email input](us-b04-01-request-step.png)
 
-![Login page request step - centered app mark and single Send me a code button, no email input](32975b9f-2026-07-27.png)
+Step 2 — the request step transitions in place to the 6-digit monospace code-entry step, input auto-focused.
 
-Step 2 — clicking the button (request-code mocked ok:true) transitions in place to the 6-digit monospace code-entry step, input auto-focused.
+![Login page code entry step - monospace 6-digit input](us-b04-02-code-step.png)
 
-```bash {image}
-![Login page code entry step - monospace 6-digit input](docs/demos/us-b04-02-code-step.png)
-```
+Non-digit input is stripped at the input rather than by the inert `pattern` attribute. Setting the field to `77-7 7x` and dispatching `input` leaves `7777` — four digits, so no submit fires. This is the paste shape (`123 456`, `123-456`) that email clients produce.
 
-![Login page code entry step - monospace 6-digit input](d757339c-2026-07-27.png)
+Step 3 — an incorrect code auto-submits on the sixth digit and shows an inline error in the danger color without navigating away from /login. This hit the real endpoint: `777778` against the seeded `777777` returned `400 {"error":"Incorrect code."}`.
 
-Step 3 — submitting an incorrect code (verify-code mocked 400 'Incorrect code.') shows an inline error in the danger color without navigating away from /login.
+![Login page inline error on incorrect code](us-b04-03-code-error.png)
 
-```bash {image}
-![Login page inline error on incorrect code](docs/demos/us-b04-03-code-error.png)
-```
+Two accessibility behaviors verified in-page rather than by screenshot:
 
-![Login page inline error on incorrect code](037eabab-2026-07-27.png)
+- Typing a correction clears the error immediately (`document.querySelector('p[role=alert]')` is `null` after the next `input`), so the UI no longer reads as failing through the whole retype.
+- Two *identical* consecutive failures produce two different DOM nodes (`n2 === n1` evaluates to `false`), because the alert `<p>` is wrapped in `{#key errorNonce}`. A `role="alert"` region whose text is byte-identical is not re-announced, so without this the second "Incorrect code." would be silent for screen reader users.
 
-Step 4 — rate-limit (429) message: mocked POST /api/auth/request-code returning {error:..., retryAfterMinutes:7} renders 'Too many code requests. Try again in 7 minutes.' inline (verified live via rodney; reproduced here deterministically against the actual page source string template).
+Step 4 — the correct code redirects to /inbox. Submitting `777777` returned `200`, the server set the session cookie, and `rodney url` reports `http://localhost:5199/inbox` with the US-J02 app shell rendered. `/inbox` is behind the `(app)` route group's session check, so reaching it is itself proof the cookie was issued and accepted.
+
+![Inbox app shell after a successful login](us-b04-04-inbox-after-login.png)
+
+Step 5 — 'Request a new code' (formerly 'Start over') returns to the request step and discloses what a second request costs, rather than silently inviting a click that invalidates a working code and spends a rate-limit slot. Page text after clicking it: `dusk // inbox | Send me a code | Any code we already sent stays valid until you request a new one.`
+
+![Request step showing the note that an already-sent code stays valid](us-b04-05-request-new-code-note.png)
+
+Step 6 — rate limiting, unmocked. Three `auth_codes` rows were seeded with the oldest 4 minutes old, so one slot frees up in ~6 minutes. The page renders the derived message:
+
+![Rate-limited login page showing try again in 6 minutes](us-b04-06-rate-limited.png)
+
+The header and body are computed from the same oldest-request timestamp, so they cannot disagree — `curl` against the same state returns `retry-after: 354` alongside `{"error":"Too many code requests. Please try again later.","retryAfterMinutes":6}` (354s rounds up to 6 minutes).
+
+There is no `429` branch in the verify-code path: `/api/auth/verify-code` is not rate-limited, so every rejection there is a `400`. Brute force is bounded by the two limits that do exist — 5 attempts per code and 3 codes per 10 minutes, i.e. at most 15 guesses per 10 minutes against a 10^6 space:
 
 ```bash
-grep -n 'Too many code requests' src/routes/login/+page.svelte
+grep -c 'status === 429' src/routes/login/+page.svelte
 ```
 
 ```output
-36:						? `Too many code requests. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`
-37:						: 'Too many code requests. Please try again later.';
+1
 ```
 
-Step 5 — valid code redirects to /inbox: with a demo session cookie set (document.cookie = 'session=...') and both request-code/verify-code mocked ok:true, submitting the code step calls goto('/inbox') and the app shell (top bar + two-pane layout from US-J02) renders at /inbox — confirmed live via rodney ('rodney url' -> http://localhost:5173/inbox, page HTML contains the app shell's header/aside). Reproduced here deterministically against the actual redirect call in the component source.
+Known limitation, not addressed here: reloading the page during the code step drops back to the request step with the issued code still valid but no longer enterable.
 
-```bash
-grep -n "goto(resolve('/inbox'))" src/routes/login/+page.svelte
-```
-
-```output
-86:			await goto(resolve('/inbox'));
-```
+All `auth_codes` rows and the session row created by this run were deleted afterward, leaving the live Turso DB with 0 of each.

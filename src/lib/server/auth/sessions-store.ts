@@ -10,11 +10,23 @@
 // argument (typed via `import type` of the `db` singleton) so this module
 // has no `$env/dynamic/private` dependency and can be exercised by the
 // standalone `verify-auth-sessions.mts` script as well as real app code.
+import { createHash } from 'node:crypto';
 import { and, eq, gt } from 'drizzle-orm';
-import type { db as dbSingleton } from '../db';
 import { sessions } from '../db/schema';
+import type { Database } from '../db/types';
 
-export type Database = typeof dbSingleton;
+/**
+ * Hashes a raw session token for storage/lookup — the only hash function that
+ * may touch `sessions.token_hash`. Deliberately separate from
+ * `hashAuthCode` in `auth-codes.ts` despite the identical implementation: the
+ * two hash different secrets with different threat models (a 32-byte random
+ * token has no brute-forceable preimage space, a 6-digit code does), so
+ * changing one — e.g. keying the code hash with an HMAC — must not silently
+ * change the other. US-B05 should call this rather than re-inlining it.
+ */
+export function hashSessionToken(token: string): string {
+	return createHash('sha256').update(token).digest('hex');
+}
 
 /** Inserts a new sessions row (given the hash of the raw session token) and returns it. */
 export async function createSession(database: Database, tokenHash: string, expiresAt: Date) {
@@ -22,7 +34,11 @@ export async function createSession(database: Database, tokenHash: string, expir
 	return row;
 }
 
-/** Returns the session row for a token hash if it exists and is not expired. */
+/**
+ * Returns the session row for a token hash if it exists and is not expired.
+ * `sessions.token_hash` carries a unique index (`sessions_token_hash_unique`),
+ * so at most one row can match; `.limit(1)` just makes that explicit.
+ */
 export async function getValidSessionByTokenHash(
 	database: Database,
 	tokenHash: string,
@@ -31,7 +47,8 @@ export async function getValidSessionByTokenHash(
 	const rows = await database
 		.select()
 		.from(sessions)
-		.where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, now)));
+		.where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, now)))
+		.limit(1);
 	return rows[0] ?? null;
 }
 
