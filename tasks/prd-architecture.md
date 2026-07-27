@@ -24,7 +24,7 @@ Defines the technical foundation: routing structure, hosting/runtime constraints
 
 ### Attachment Storage: **Cloudflare R2**
 
-- Inbound attachments (parsed from Resend webhook payloads, base64-encoded) and outbound compose attachments are uploaded to Cloudflare R2 as binary objects via the S3-compatible API (`@aws-sdk/client-s3` pointed at the R2 endpoint, or the R2 SDK).
+- Inbound attachments (fetched from Resend's Attachments API — the webhook carries metadata only) and outbound compose attachments are uploaded to Cloudflare R2 as binary objects via the S3-compatible API (`@aws-sdk/client-s3` pointed at the R2 endpoint, or the R2 SDK).
 - Only attachment **metadata** (filename, content-type, size, R2 object key/URL, associated email ID) is stored in Turso — never raw bytes in the DB. This keeps DB rows small and avoids serverless function response-size limits when listing emails.
 - R2 is chosen over Vercel Blob for zero egress fees and to keep storage decoupled from the hosting platform.
 
@@ -77,7 +77,7 @@ src/routes/
 ## Serverless Constraints Accounted For
 
 - Vercel serverless functions have a max execution duration (10s Hobby / configurable on Pro) — the inbound webhook handler must parse, sanitize, and persist within this window; large attachments are streamed directly to R2 rather than buffered fully in memory where avoidable.
-- Request/response body size limits (4.5MB default on Vercel) mean large attachments from Resend's webhook (which sends attachments base64-inline) are decoded and immediately streamed out to R2 rather than held in a response payload.
+- Request/response body size limits (4.5MB default on Vercel) are why Resend's inbound webhook carries metadata only; attachment content is fetched separately and immediately streamed out to R2 rather than held in a response payload.
 - No persistent local filesystem — all state lives in Turso + R2, nothing is written to disk between invocations.
 - Turso is accessed via its HTTP-based libSQL client (`@libsql/client`), which is stateless per-request and has no connection-pool exhaustion risk on serverless.
 

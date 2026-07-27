@@ -2,7 +2,9 @@
 
 ## Introduction
 
-Handles Resend's inbound webhook: verifying the request, parsing the payload, sanitizing HTML, uploading attachments to R2, and persisting threads/emails/contacts/attachments to Turso.
+Handles Resend's inbound webhook: verifying the request, fetching the received email's content, sanitizing HTML, uploading attachments to R2, and persisting threads/emails/contacts/attachments to Turso.
+
+**Note (observed during US-E02):** the `email.received` webhook payload carries **metadata only** — no body, no headers, no attachment content. Body/`headers`/attachment metadata come from the Received-emails API (`resend.emails.receiving.get(email_id)`), and attachment *content* from the Attachments API. Read "the payload" below as "the fetched received-email record".
 
 ## Goals
 
@@ -26,7 +28,7 @@ Handles Resend's inbound webhook: verifying the request, parsing the payload, sa
 **Description:** As the app owner, I want every inbound sender automatically added to my contacts, so I don't have to add people manually.
 
 **Acceptance Criteria:**
-- [ ] Verified payload is parsed into from/to/cc/subject/body/date/Message-ID/In-Reply-To fields
+- [ ] Verified payload is parsed into from/to/cc/subject/body/date/Message-ID/In-Reply-To fields (body/headers fetched by `email_id`, since the webhook omits them)
 - [ ] A `contacts` row is upserted by `email` (case-insensitive); if new, `name` is set from the payload's display name and `auto_created = true`
 - [ ] If a contact already exists and was manually edited (`auto_created = false`), its `name` is not overwritten
 - [ ] Typecheck passes
@@ -53,7 +55,7 @@ Handles Resend's inbound webhook: verifying the request, parsing the payload, sa
 **Description:** As the app owner, I want inbound attachments saved and accessible from the thread view, so I don't lose files sent to me.
 
 **Acceptance Criteria:**
-- [ ] Each attachment in the payload (base64-encoded) is decoded and uploaded to R2 under a key namespaced by email ID
+- [ ] Each attachment listed on the fetched record is downloaded via Resend's Attachments API and uploaded to R2 under a key namespaced by email ID
 - [ ] An `attachments` row is created per file with filename, content-type, size, and R2 key (bucket is private; download URLs are presigned on demand rather than stored)
 - [ ] Ingestion completes successfully even if one attachment upload fails, logging the failure without discarding the rest of the email (attachment marked with a retry-later state is out of scope for v1 — failed attachments are simply omitted and logged)
 - [ ] Typecheck passes
@@ -74,7 +76,7 @@ Handles Resend's inbound webhook: verifying the request, parsing the payload, sa
 
 ## Technical Considerations
 
-- Resend's inbound payload delivers attachments base64-inline in the JSON body; the handler must decode and stream to R2 promptly to stay within serverless memory/time limits (see Architecture PRD).
+- Resend's webhook does **not** carry attachment content — only metadata (`id`, `filename`, `content_type`, `size`, `content_id`, `content_disposition`). Content is fetched per attachment and streamed to R2 promptly to stay within serverless memory/time limits (see Architecture PRD).
 - Webhook processing should acknowledge receipt (200) only after successful persistence, so Resend's retry behavior can recover from transient failures; verification failures return 401 as noted above (not retried, since retrying a bad signature is pointless).
 
 ## Success Metrics

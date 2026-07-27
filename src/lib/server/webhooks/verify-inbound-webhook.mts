@@ -23,8 +23,11 @@ if (!secret) {
 }
 const webhook = new Webhook(secret);
 
-// A minimal stand-in for a Resend inbound payload. US-E01 only cares that the
-// bytes are signed, not what they contain.
+// A stand-in for a Resend inbound payload, shaped like a real one (metadata
+// only — the real webhook carries no body/headers/attachments). The signature
+// cases below only care that the bytes are signed; the `email_id` here is
+// deliberately not a real one, so the endpoint ignores it with a 200 rather
+// than calling out to Resend. Part 2 covers the real-id path.
 const body = JSON.stringify({
 	type: 'email.received',
 	data: { from: 'sender@example.com', subject: 'signed payload' }
@@ -89,8 +92,112 @@ await check('missing svix-id header', 401, {
 	body
 });
 
+// ---------------------------------------------------------------------------
+// Part 2 (US-E02) — full ingestion path against a real received email.
+//
+// Skipped unless RESEND_API_KEY and the Turso vars are set, so the signature
+// suite above stays runnable with nothing but a throwaway signing secret.
+// Picks the most recent real inbound email in the Resend account (override with
+// VERIFY_RECEIVED_EMAIL_ID), posts a genuinely-signed `email.received` envelope
+// naming it, and asserts the sender landed in `contacts`.
+// ---------------------------------------------------------------------------
+
+const apiKey = process.env.RESEND_API_KEY;
+const tursoUrl = process.env.TURSO_DATABASE_URL;
+const tursoToken = process.env.TURSO_AUTH_TOKEN;
+
+if (!apiKey || !tursoUrl || !tursoToken) {
+	console.log('\nskipping ingestion checks (RESEND_API_KEY / TURSO_* not set)');
+} else {
+	const { Resend } = await import('resend');
+	const { createClient } = await import('@libsql/client');
+
+	const resend = new Resend(apiKey);
+	let emailId = process.env.VERIFY_RECEIVED_EMAIL_ID;
+
+	if (!emailId) {
+		const { data } = await resend.emails.receiving.list();
+		emailId = data?.data[0]?.id;
+	}
+
+	if (!emailId) {
+		console.log('\nskipping ingestion checks (no received emails in the Resend account yet)');
+	} else {
+		const { data: received } = await resend.emails.receiving.get(emailId);
+		if (!received) throw new Error(`could not fetch received email ${emailId}`);
+		const senderEmail = received.from.trim().toLowerCase();
+
+		const turso = createClient({ url: tursoUrl, authToken: tursoToken });
+		const countContact = async () => {
+			const { rows } = await turso.execute({
+				sql: 'select count(*) as n from contacts where lower(email) = ?',
+				args: [senderEmail]
+			});
+			return Number(rows[0].n);
+		};
+
+		const before = await countContact();
+		console.log(`\nreal received email ${emailId}: contacts rows for sender before = ${before}`);
+
+		const ingestBody = JSON.stringify({
+			type: 'email.received',
+			created_at: received.created_at,
+			data: { email_id: emailId, from: received.from, subject: received.subject }
+		});
+		await check('real email.received envelope is ingested', 200, {
+			headers: sign(ingestBody, 'msg_us_e02_ingest', new Date()),
+			body: ingestBody
+		});
+
+		const after = await countContact();
+		const contacted = after === 1;
+		if (!contacted) failures++;
+		console.log(
+			`${contacted ? 'PASS' : 'FAIL'}  sender upserted into contacts -> ${after} row(s) (expected 1)`
+		);
+
+		// Re-delivery (Resend retries) must not duplicate the contact.
+		const retryBody = ingestBody;
+		await check('redelivery of the same email is accepted', 200, {
+			headers: sign(retryBody, 'msg_us_e02_retry', new Date()),
+			body: retryBody
+		});
+		const afterRetry = await countContact();
+		const stillOne = afterRetry === 1;
+		if (!stillOne) failures++;
+		console.log(
+			`${stillOne ? 'PASS' : 'FAIL'}  redelivery did not duplicate -> ${afterRetry} row(s) (expected 1)`
+		);
+
+		// A verified payload for a *different* event type is ignored, not 500'd.
+		const otherBody = JSON.stringify({
+			type: 'email.delivered',
+			data: { email_id: emailId }
+		});
+		await check('non-received event type is ignored', 200, {
+			headers: sign(otherBody, 'msg_us_e02_other', new Date()),
+			body: otherBody
+		});
+
+		// A verified envelope naming an `email_id` Resend will never serve (a 4xx
+		// from the Received-emails API) must be *ignored* with a 200, not 500'd:
+		// Resend retries 5xx, and no number of retries can make a missing email
+		// appear. Only a transient failure is allowed to reach a 500.
+		const missingBody = JSON.stringify({
+			type: 'email.received',
+			data: { email_id: '00000000-0000-4000-8000-000000000000' }
+		});
+		await check('permanently-unfetchable email_id is ignored, not retried', 200, {
+			headers: sign(missingBody, 'msg_us_e02_missing', new Date()),
+			body: missingBody
+		});
+
+		turso.close();
+	}
+}
+
 if (failures > 0) {
 	console.error(`\n${failures} check(s) failed`);
 	process.exit(1);
 }
-console.log('\nAll webhook signature checks passed');
+console.log('\nAll webhook checks passed');

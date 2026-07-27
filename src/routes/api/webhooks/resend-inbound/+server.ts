@@ -1,13 +1,20 @@
-// POST /api/webhooks/resend-inbound (US-E01)
+// POST /api/webhooks/resend-inbound (US-E01, US-E02)
 //
 // Resend delivers inbound mail here. Every request is Svix-verified against the
 // raw body *before* anything is parsed or persisted (FR-1,
-// tasks/prd-feature-inbound-processing.md). Parsing, contact upsert, HTML
-// sanitization, threading and attachment upload land in US-E02..E05 — this
-// story is the gate in front of them.
+// tasks/prd-feature-inbound-processing.md).
+//
+// US-E01 built the verification gate. US-E02 adds parsing and the sender
+// contact upsert. HTML sanitization + `emails` insert (US-E03), thread
+// assignment (US-E04) and attachment upload (US-E05) hang off the same
+// `parsed` object below.
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { verifySvixRequest } from '$lib/server/webhooks/svix';
+import { parseInboundWebhookEvent, parseReceivedEmail } from '$lib/server/inbound/parse';
+import { fetchReceivedEmail, ReceivedEmailFetchError } from '$lib/server/email/resend';
+import { upsertContactFromInbound } from '$lib/server/db/contacts';
+import { db } from '$lib/server/db';
 
 export const POST: RequestHandler = async ({ request }) => {
 	const result = await verifySvixRequest(request);
@@ -20,6 +27,47 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 
-	// Verified. US-E02 takes over from `result.payload` here.
+	const event = parseInboundWebhookEvent(result.payload);
+	if (!event.ok) {
+		// A verified-but-unusable payload is not ours to retry: answer 200 so
+		// Resend doesn't redeliver it forever, and log what arrived.
+		console.warn('ignoring inbound webhook payload:', event.reason);
+		return json({ ok: true, ignored: true });
+	}
+
+	// The webhook is metadata-only — body, headers and attachments must be
+	// fetched. A *transient* failure is allowed to throw → 500, which is exactly
+	// when Resend's retry helps. A permanent one (4xx: the `email_id` is gone or
+	// inaccessible) must answer 200 for the same reason an unusable payload does
+	// — redelivering it forever cannot make it succeed.
+	let received;
+	try {
+		received = await fetchReceivedEmail(event.emailId);
+	} catch (err) {
+		if (err instanceof ReceivedEmailFetchError && !err.retryable) {
+			console.warn(
+				`ignoring inbound webhook: received-email fetch failed permanently`,
+				`(${event.emailId}, status ${err.statusCode})`
+			);
+			return json({ ok: true, ignored: true });
+		}
+		throw err;
+	}
+	const parsed = parseReceivedEmail(received);
+
+	const { contact, created } = await upsertContactFromInbound(db, {
+		email: parsed.fromEmail,
+		name: parsed.fromName
+	});
+
+	// Deliberately no sender address in the log line: it would put a real
+	// person's email address in the platform's function logs on every delivery,
+	// and the contact id already identifies the row if it needs looking up.
+	console.log(
+		`inbound email ${parsed.resendEmailId}`,
+		`(contact ${contact.id} ${created ? 'created' : 'existing'})`
+	);
+
+	// US-E03 continues from `parsed` here: sanitize, dedupe on message_id, insert.
 	return json({ ok: true });
 };
