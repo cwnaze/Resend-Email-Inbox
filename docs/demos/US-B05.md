@@ -7,7 +7,7 @@ US-B05 replaces the placeholder route protection from US-A03 with real server-si
 
 What changed:
 - `src/lib/server/auth/session.ts` — `hasSessionCookie` (cookie-presence only) is gone, replaced by `validateSession(db, cookies, now?)` (hash the cookie token, look it up in `sessions`, reject missing/unknown/expired, slide `expires_at` forward past the halfway point per FR-9) and `destroySession(db, cookies)`. Cookie name and flags now live here as the single source of truth, so the `set` in verify-code and the `delete` in logout cannot drift (a cookie deleted with a different `path` than it was set with is not deleted).
-- `src/routes/(app)/+layout.server.ts` — calls `validateSession`; clears the cookie on the way out so a stale token is not re-sent on every request.
+- `src/routes/(app)/+layout.server.ts` — calls `validateSession`; clears the cookie on the way out (when one was actually sent) so a stale token is not re-sent on every request.
 - `src/routes/api/auth/logout/+server.ts` — new, replaces `src/routes/logout/+server.ts`; deletes the row, clears the cookie, 303 to /login.
 - `src/routes/(app)/+layout.svelte` — the existing top-bar "Log out" form now posts to `/api/auth/logout`.
 - `src/routes/api/auth/verify-code/+server.ts` — uses the shared `setSessionCookie`/`SESSION_TTL_MS` instead of its own copies.
@@ -145,3 +145,43 @@ These browser steps are recorded as commentary rather than `exec` blocks because
 ```
 
 ![/login after clicking Log out in the app shell](db6ff6f1-2026-07-27.png)
+
+### Review follow-up
+
+Three points from the PR #15 review, fixed in `fix(US-B05): address PR review on session validation`:
+
+1. **`validateSession` returned a deleted row on the refresh path.** `extendSessionExpiry` is an `UPDATE ... RETURNING`, so it yields `undefined` when no row matched — which past the halfway point means the session was deleted between the read and the write (a concurrent logout, or a revocation). The old `if (refreshed)` fell through and returned the row it had already read, authorizing that one request against a session that no longer existed. It now returns `null`, matching the rule `markAuthCodeUsed` already follows in verify-code: `undefined` means someone else got there first, so reject.
+2. **The layout cleared the cookie even when none was sent.** Every unauthenticated hit — including a first-ever visit — emitted a `Set-Cookie` deleting a cookie that was never there. Now gated on the cookie actually being present.
+3. **`sessions-store.ts`'s header comment was stale**, still describing `session.ts` as the presence-check-only module "untouched until US-B05". It now states the real split: this module owns the `sessions` *table*, `session.ts` owns the *cookie* and the request-level lifecycle built on it.
+
+The block below shows the fix-2 behavior change directly — the cold-visit case is the one that no longer carries a `set-cookie`, while a request bearing a stale token still gets one.
+
+```bash
+npm run dev -- --port 5201 >/dev/null 2>&1 &
+DEV=$!
+until curl -sf -o /dev/null http://localhost:5201/login; do sleep 1; done
+
+hdrs() { curl -s -o /dev/null -D- "$@" | grep -iE "^(HTTP/|location:|set-cookie:)" | tr -d "\r" | sed "s/^/  /"; }
+
+echo "GET /inbox, no cookie at all (no set-cookie expected):"
+hdrs http://localhost:5201/inbox
+
+echo "GET /inbox, stale/bogus token (set-cookie clears it):"
+hdrs -H "Cookie: session=totally-made-up" http://localhost:5201/inbox
+
+kill $DEV
+```
+
+```output
+GET /inbox, no cookie at all (no set-cookie expected):
+  HTTP/1.1 302 Found
+  location: /login
+GET /inbox, stale/bogus token (set-cookie clears it):
+  HTTP/1.1 302 Found
+  location: /login
+  set-cookie: session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax
+```
+
+The 30 assertions in the section above still pass unchanged after these fixes (`showboat verify` re-runs that block).
+
+One gap, stated rather than glossed: the new `!refreshed` branch from fix 1 has **no automated assertion**. Reaching it requires deleting the `sessions` row between `validateSession`'s read and its update, which the verify script cannot stage without either a fake `Database` handle or a genuinely racy concurrent call — neither justified for a two-line branch. It rests on the `UPDATE ... RETURNING` semantics and the type signature, not on a test.
