@@ -52,10 +52,19 @@ export interface PreparedEmailHtml {
 	 */
 	hasVisibleText: boolean;
 	/**
-	 * Whether some image here is demonstrably not a tracking pixel — used only to
-	 * decide whether a frame is worth mounting at all, never to suppress text.
+	 * Whether some image here could actually show the reader something — used only
+	 * to decide whether a frame is worth mounting, never to suppress text.
+	 *
+	 * "Could" is the operative word, and it is deliberately weaker than "definitely
+	 * is": an image that declares no size at all is ambiguous (a hero sized by the
+	 * stripped `style` attribute looks identical to a CSS-sized tracker), and the
+	 * frame is where the reader gets to decide. What it excludes is the cases where
+	 * a frame can only ever be blank: an image that *declares* itself pixel-sized, an
+	 * image inside a non-rendering subtree, and a `cid:` reference this app cannot
+	 * resolve. Without those exclusions a body of one 1×1 tracker mounted a blank
+	 * frame whose only button existed to fire the beacon.
 	 */
-	hasDefiniteImage: boolean;
+	hasLoadableImage: boolean;
 }
 
 /**
@@ -91,26 +100,18 @@ function declaredSize(
 }
 
 /**
- * Whether an image is *positively* something to look at.
+ * Whether an image *declares* itself too small to be worth looking at.
  *
- * "Positively" is the correction for a real bug: treating an unknown size as
- * "could be real" meant a dimensionless tracking pixel — the common kind, sized
- * by the CSS this app strips — counted as content and discarded the readable
- * `text/plain` part of the message. So an image now has to declare a size above
- * pixel range (in px, or as a percentage, which is how responsive hero images are
- * sized and which no tracker uses), and must not declare a pixel-range size on
- * either axis (a 600×1 rule is a spacer).
+ * Only a declared size counts. An undeclared one is genuinely ambiguous — a hero
+ * image sized by the `style` attribute the sanitizer strips is indistinguishable
+ * from a CSS-sized tracker — and resolving that ambiguity by guessing is what
+ * previously made real messages unreachable, so it stays ambiguous and the reader
+ * decides in the frame.
  */
-function isDefiniteImage(image: Element): boolean {
+function declaresPixelSize(image: Element): boolean {
 	const width = declaredSize(image, 'width');
 	const height = declaredSize(image, 'height');
-
-	const tiny = [width.px, height.px].some((px) => px !== null && px <= TRACKING_PIXEL_MAX_PX);
-	if (tiny) return false;
-
-	return [width.px, height.px, width.pct, height.pct].some(
-		(value) => value !== null && value > TRACKING_PIXEL_MAX_PX
-	);
+	return [width.px, height.px].some((px) => px !== null && px <= TRACKING_PIXEL_MAX_PX);
 }
 
 /**
@@ -126,10 +127,28 @@ function isLocalSource(src: string): boolean {
 	return value.startsWith('data:') || value.startsWith('cid:');
 }
 
-/** Whether the element sits inside a `[hidden]` subtree, which the UA hides. */
+/**
+ * Elements the UA stylesheet gives `display: none`, so their contents render
+ * nothing even though the sanitizer allows them through.
+ *
+ * `hidden` is the obvious one but not the only one: a `<dialog>` without `open`
+ * and a `<datalist>` both survive `SANITIZE_OPTIONS` and both render nothing, and
+ * counting their text as visible let `<dialog>Full invoice text</dialog>` suppress
+ * a readable `text/plain` part in favour of a frame that draws nothing at all.
+ * Add to this list rather than assuming `[hidden]` covers it.
+ */
+function isNonRendering(element: Element): boolean {
+	if (element.hasAttribute('hidden')) return true;
+	if (element.tagName === 'DATALIST') return true;
+	// A dialog renders only when open (and even then as a modal, but its text is at
+	// least reachable).
+	return element.tagName === 'DIALOG' && !element.hasAttribute('open');
+}
+
+/** Whether the element sits inside a subtree that renders nothing. */
 function isHidden(element: Element): boolean {
 	for (let node: Element | null = element; node !== null; node = node.parentElement) {
-		if (node.hasAttribute('hidden')) return true;
+		if (isNonRendering(node)) return true;
 	}
 	return false;
 }
@@ -157,8 +176,8 @@ function hasVisibleText(node: Node): boolean {
 			continue;
 		}
 		if (child.nodeType !== 1) continue;
-		// `hidden` survives sanitization and the UA stylesheet honours it.
-		if ((child as Element).hasAttribute('hidden')) continue;
+		// Skip subtrees the UA stylesheet hides — see `isNonRendering`.
+		if (isNonRendering(child as Element)) continue;
 		if (hasVisibleText(child)) return true;
 	}
 	return false;
@@ -211,16 +230,25 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 	}
 
 	let blockedImageCount = 0;
-	let hasDefiniteImage = false;
+	let hasLoadableImage = false;
 	for (const image of container.querySelectorAll('img')) {
 		const src = image.getAttribute('src');
+		const hidden = isHidden(image);
 
 		// An image with no `src` at all — including one whose `javascript:` src
 		// DOMPurify just removed — can never render, so it must not make the body
-		// look like it has something to show. Nor can one inside a `[hidden]`
-		// subtree, which the UA stylesheet hides: a `<div hidden>` wrapping a
-		// 600×400 image used to mount a frame that renders completely blank.
-		if (src !== null && !isHidden(image) && isDefiniteImage(image)) hasDefiniteImage = true;
+		// look like it has something to show. Nor can one inside a non-rendering
+		// subtree (a `<div hidden>` wrapping a 600×400 image mounted a frame that
+		// drew nothing), nor an unresolvable `cid:` reference, nor one that declares
+		// itself a tracking pixel.
+		if (
+			src !== null &&
+			!hidden &&
+			!src.trim().toLowerCase().startsWith('cid:') &&
+			!declaresPixelSize(image)
+		) {
+			hasLoadableImage = true;
+		}
 
 		// A `src` DOMPurify rejected is already gone by now, which is why parking one
 		// can never reintroduce a scheme the sanitizer refused.
@@ -228,7 +256,11 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 
 		image.removeAttribute('src');
 		image.setAttribute(BLOCKED_IMAGE_ATTR, src);
-		blockedImageCount++;
+		// Hidden images are still *blocked* — a `display:none` image is fetched by
+		// plenty of browsers, so the parking matters — but they are not counted,
+		// because the count becomes a claim to the reader ("1 remote image blocked")
+		// and loading one would reveal nothing.
+		if (!hidden) blockedImageCount++;
 	}
 
 	const clean = container.innerHTML;
@@ -237,6 +269,6 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 		html: clean,
 		blockedImageCount,
 		hasVisibleText: hasVisibleText(container),
-		hasDefiniteImage
+		hasLoadableImage
 	};
 }

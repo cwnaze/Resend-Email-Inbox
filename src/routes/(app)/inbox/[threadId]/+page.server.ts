@@ -80,12 +80,13 @@ export const load: PageServerLoad = async ({ params }) => {
 			// Two independent decisions, deliberately not one either/or — that either/or
 			// was the source of a whole family of bugs.
 			//
-			// A frame is mounted when there is anything to frame: real text, an image
-			// that is demonstrably not a tracking pixel, or any remote image we blocked
-			// (the reader may want to load it, and the notice is how they learn it
-			// exists). Nothing to frame — an empty body, or one whose only image is an
-			// unresolvable `cid:` reference — leaves `html` null so the honest "no body"
-			// line can render instead of a blank frame.
+			// A frame is mounted when there is anything a frame could show: real text, or
+			// an image that could actually display something. Deliberately *not* "any
+			// image we blocked": a body whose only image is a declared 1×1 tracker
+			// mounted a blank frame captioned "1 remote image blocked", whose only
+			// button existed to fire the beacon. Nothing to frame — an empty body, or one
+			// whose only image is an unresolvable `cid:` reference — leaves `html` null
+			// so the honest "no body" line can render instead.
 			//
 			// The text part is dropped **only** when the HTML has real text of its own.
 			// It is never dropped on the strength of the image heuristic, because that
@@ -93,9 +94,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			// tracking pixel), and being wrong used to mean a readable message with no
 			// way to reach it. So a frame whose content we cannot vouch for is shown
 			// *with* the text beneath it, and the reader loses nothing either way.
-			const showFrame =
-				prepared !== null &&
-				(prepared.hasVisibleText || prepared.hasDefiniteImage || prepared.blockedImageCount > 0);
+			const showFrame = prepared !== null && (prepared.hasVisibleText || prepared.hasLoadableImage);
 			const showText = prepared === null || !prepared.hasVisibleText;
 
 			return {

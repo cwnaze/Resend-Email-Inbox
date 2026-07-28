@@ -1,7 +1,7 @@
 # US-G02: Sanitized HTML rendering with image opt-in
 
-*2026-07-28T19:09:17Z by Showboat 0.6.1*
-<!-- showboat-id: 9fe53fdb-25ae-42aa-8099-20867dcb4969 -->
+*2026-07-28T19:21:44Z by Showboat 0.6.1*
+<!-- showboat-id: 3ee7ec31-1e61-4169-b3a1-4b9f16015699 -->
 
 **US-G02 — Sanitized HTML rendering with image opt-in.** An HTML email body now renders inside a sandboxed `<iframe srcdoc>` (`sandbox="allow-same-origin"`, never `allow-scripts`) sized to its content height. Every remote `<img src>` is moved aside on the server before the markup crosses the wire, so nothing in a stored body reaches a third party on open; a per-message **Load images** button puts them back for that one message. A message with only `body_text` renders as preformatted, wrapped plain text and mounts no iframe at all.
 
@@ -75,28 +75,35 @@ prepareEmailHtml
   ok   drops remote media src outright
   ok   never parks a javascript: src
   ok   a meta refresh cannot survive to redirect the frame
-body choice: hasVisibleText / hasDefiniteImage / blockedImageCount
+body choice: hasVisibleText / hasLoadableImage / blockedImageCount
   ok   prose is visible text
   ok   markup with nothing in it is not
   ok   an image-only body has no visible text
   ok   a style-hidden preheader still counts as visible text (style is stripped on write)
   ok   text inside a [hidden] element does not (it renders nothing)
   ok   ...but the hidden element is still rendered as written (the text test must not mutate the body)
-  ok   a hero image with px dimensions is a definite image
-  ok   a responsive hero sized in % is too
+  ok   a hero image with px dimensions could show something
+  ok   a responsive hero sized in % could too
   ok   a 1x1 tracking pixel is not
   ok   a 600x1 spacer rule is not
-  ok   a 16x16 logo is not
-  ok   a 17x17 image is
-  ok   a dimensionless image is not (CSS-sized trackers are the common kind)
+  ok   a declared 16x16 image is too small to be worth a frame
+  ok   a 17x17 one is not
+  ok   a dimensionless image stays ambiguous, so the reader decides in the frame
   ok   an image whose src the sanitizer removed is not
-  ok   a definite-size image inside a [hidden] subtree is not (it renders blank)
-  ok   a px unit on a real size still counts
-  ok   a decimal size still counts
+  ok   an image inside a [hidden] subtree cannot show anything
+  ok   a px unit on a real size is read as a size
+  ok   a decimal size is read as a size
   ok   a px unit on a pixel size is still a pixel
-  ok   a non-numeric size is not evidence either way
+  ok   a non-numeric size leaves it ambiguous
   ok   a small number inside the parked URL cannot demote a real image
   ok   alt text mentioning width=1 cannot demote a real image
+  ok   a cid: reference this app cannot resolve is not loadable
+  ok   a data: image is loadable (the bytes are already here)
+  ok   a <dialog> without open renders nothing
+  ok   a <dialog open> does render
+  ok   a <datalist> renders nothing
+  ok   a hidden image is blocked but not counted (the notice would be a lie)
+  ok   ...though its src is still parked, because a hidden image is fetched by plenty of browsers
   ok   a cid: image is not counted as blocked
   ok   a data: image is not counted as blocked
   ok   a remote image is
@@ -117,7 +124,7 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/db/verify-inbox-list.m
 ```
 
 ```output
-156/156 checks passed
+163/163 checks passed
 ```
 
 ## Browser verification
@@ -266,12 +273,12 @@ true
 
 The third acceptance criterion is about a message with *only* `body_text`, but the hard cases have **both** parts, and six rounds of review turned this from an either/or into two independent decisions:
 
-- A **frame** is mounted when there is anything to frame: real text, an image that is demonstrably not a tracking pixel, or any remote image that was blocked (the reader may want to load it, and the notice is how they learn it exists). Nothing to frame — an empty body, or one whose only image is an unresolvable `cid:` reference — leaves `html` null so the honest "no body" line renders instead of a blank frame.
-- The **text part** is dropped *only* when the HTML has readable text of its own.
+- A **frame** is mounted when there is anything a frame could show: readable text, or an image that could actually display something. Not "any blocked image" — a body whose only image is a declared 1×1 tracker used to mount a blank frame captioned "1 remote image blocked", whose only button existed to fire the beacon. Nothing to frame — an empty body, or one whose only image is an unresolvable `cid:` reference — leaves `html` null so the honest "no body" line renders instead.
+- The **text part** is dropped *only* when the HTML has readable text of its own. When both render, the text is a collapsed **"Plain-text version"** disclosure rather than a second copy pasted under the frame, which read as the same message twice with nothing telling a reader — or a screen reader — which was which.
 
 That second rule is the whole lesson. Earlier versions decided it from a size heuristic over the images, and every threshold was one attribute away from being bypassed — `width="4"`, then `width="17"` — with each bypass silently discarding a readable message and leaving no way to reach it. A heuristic cannot win that argument, so it no longer gets to: a frame whose content cannot be vouched for is shown *with* the text beneath it, and the reader loses nothing either way.
 
-The image heuristic still decides whether a frame is worth mounting, and it is computed **in the DOM** inside `prepareEmailHtml` — `textContent` for text (skipping `[hidden]` subtrees, which render nothing), and for images a positive size declaration, ignoring images with no `src` and images inside hidden subtrees. Never by pattern-matching the finished markup: a sender controls both the URL and the attribute text of an `<img>`, so a regex there read `hero.png?height=2` as a 2px image, and a de-tagging regex stopping at the first `>` let a `>` in a query string masquerade as body text.
+The image heuristic still decides whether a frame is worth mounting, and it is computed **in the DOM** inside `prepareEmailHtml` — a walk for text that skips subtrees the UA stylesheet hides (`[hidden]`, but also `<dialog>` without `open` and `<datalist>`, which render nothing and let `<dialog>Full invoice text</dialog>` suppress a readable text part), and for images a *declared* pixel size as the disqualifier, ignoring images with no `src`, images inside hidden subtrees, and `cid:` references. An undeclared size stays deliberately ambiguous — a hero sized by the stripped `style` attribute is indistinguishable from a CSS-sized tracker — so the frame appears and the reader decides. Never by pattern-matching the finished markup: a sender controls both the URL and the attribute text of an `<img>`, so a regex there read `hero.png?height=2` as a 2px image, and a de-tagging regex stopping at the first `>` let a `>` in a query string masquerade as body text.
 
 The three threads below come from one seeder: a spacer-plus-pixel body beside a readable text part, an image-only hero beside a "view in browser" stub, and a body with nothing to show at all.
 
@@ -294,15 +301,15 @@ done
 ```output
 seeded pixel thread
 == g02-pixel+pixel
-   iframes mounted: 1
+   iframes mounted: 0
    pre blocks: 1
-   Load images buttons: 1
+   Load images buttons: 0
    what the reader sees: Your code is 480912.
 == g02-pixel+hero
    iframes mounted: 1
    pre blocks: 1
    Load images buttons: 1
-   what the reader sees: View this email in your browser
+   what the reader sees: Plain-text version
 == g02-pixel+nothing
    iframes mounted: 0
    pre blocks: 0
@@ -314,7 +321,7 @@ seeded pixel thread
 ![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](/private/tmp/claude-501/-Users-bloodintern1-Desktop-Resend-Email-Inbox/04f39db3-4c26-412a-b51d-fdebda8a45cc/scratchpad/g02-fixed.png)
 ```
 
-![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](b80815ec-2026-07-28.png)
+![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](2639e4a1-2026-07-28.png)
 
 ### Cleanup
 

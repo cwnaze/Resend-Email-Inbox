@@ -87,15 +87,33 @@
 		/>
 	{/if}
 
-	{#if message.body}
-		<!--
-			A text-only body: preformatted so the message's own line breaks survive
-			(`whitespace-pre-wrap` also wraps to the reading measure), in the app's
-			sans face rather than the monospace `<pre>` default because this is prose.
-			`break-words` stops a long unbroken URL from forcing horizontal scroll.
-		-->
+	<!--
+		Preformatted so the message's own line breaks survive (`whitespace-pre-wrap`
+		also wraps to the reading measure), in the app's sans face rather than the
+		monospace `<pre>` default because this is prose. `break-words` stops a long
+		unbroken URL from forcing horizontal scroll.
+	-->
+	{#if message.body && !message.html}
 		<pre
 			class="mt-3 max-w-[72ch] font-sans text-sm leading-relaxed break-words whitespace-pre-wrap text-text-primary">{message.body}</pre>
+	{:else if message.body}
+		<!--
+			Both bodies are present, which means the HTML has no readable text of its
+			own and the frame may be showing little or nothing. Collapsed and labelled
+			rather than concatenated: dumped straight under the frame it reads as the
+			same message twice, with nothing to tell a reader — or a screen reader —
+			which is which. Closed by default because the frame is usually the better
+			rendering; open is one click away when it isn't.
+		-->
+		<details class="mt-3 max-w-[72ch]">
+			<summary
+				class="cursor-pointer font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent focus-visible:text-accent focus-visible:outline-none"
+			>
+				Plain-text version
+			</summary>
+			<pre
+				class="mt-2 font-sans text-sm leading-relaxed break-words whitespace-pre-wrap text-text-primary">{message.body}</pre>
+		</details>
 	{/if}
 
 	{#if !message.html && !message.body}

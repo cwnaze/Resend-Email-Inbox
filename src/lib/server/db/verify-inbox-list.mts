@@ -346,7 +346,7 @@ check(
 	prepareEmailHtml('<meta http-equiv="refresh" content="0;url=https://evil.example">') === null
 );
 
-console.log('body choice: hasVisibleText / hasDefiniteImage / blockedImageCount');
+console.log('body choice: hasVisibleText / hasLoadableImage / blockedImageCount');
 // The rule these back, and the reason it is shaped this way: the text part is
 // dropped ONLY when the HTML has real text of its own. Six review rounds of
 // deciding it from a size heuristic over the images produced a bypass at every
@@ -354,7 +354,7 @@ console.log('body choice: hasVisibleText / hasDefiniteImage / blockedImageCount'
 // readable message. So the heuristic no longer gets to decide that — it only
 // decides whether a frame is worth mounting.
 const text = (html: string) => prepareEmailHtml(html)?.hasVisibleText ?? null;
-const definite = (html: string) => prepareEmailHtml(html)?.hasDefiniteImage ?? null;
+const loadable = (html: string) => prepareEmailHtml(html)?.hasLoadableImage ?? null;
 const blocked = (html: string) => prepareEmailHtml(html)?.blockedImageCount ?? null;
 
 equal('prose is visible text', text('<p>Hello</p>'), true);
@@ -380,77 +380,112 @@ check(
 );
 
 equal(
-	'a hero image with px dimensions is a definite image',
-	definite('<img src="https://cdn/h.png" width="600" height="400">'),
+	'a hero image with px dimensions could show something',
+	loadable('<img src="https://cdn/h.png" width="600" height="400">'),
 	true
 );
 equal(
-	'a responsive hero sized in % is too',
-	definite('<img src="https://cdn/h.png" width="100%">'),
+	'a responsive hero sized in % could too',
+	loadable('<img src="https://cdn/h.png" width="100%">'),
 	true
 );
 equal(
 	'a 1x1 tracking pixel is not',
-	definite('<img src="https://t/o.gif" width="1" height="1">'),
+	loadable('<img src="https://t/o.gif" width="1" height="1">'),
 	false
 );
 equal(
 	'a 600x1 spacer rule is not',
-	definite('<img src="https://cdn/r.png" width="600" height="1">'),
+	loadable('<img src="https://cdn/r.png" width="600" height="1">'),
 	false
 );
 equal(
-	'a 16x16 logo is not',
-	definite('<img src="https://cdn/logo.png" width="16" height="16">'),
+	'a declared 16x16 image is too small to be worth a frame',
+	loadable('<img src="https://cdn/logo.png" width="16" height="16">'),
 	false
 );
 equal(
-	'a 17x17 image is',
-	definite('<img src="https://cdn/logo.png" width="17" height="17">'),
+	'a 17x17 one is not',
+	loadable('<img src="https://cdn/logo.png" width="17" height="17">'),
 	true
 );
 equal(
-	'a dimensionless image is not (CSS-sized trackers are the common kind)',
-	definite('<img src="https://t/o.gif?id=1">'),
-	false
+	'a dimensionless image stays ambiguous, so the reader decides in the frame',
+	loadable('<img src="https://t/o.gif?id=1">'),
+	true
 );
 equal(
 	'an image whose src the sanitizer removed is not',
-	definite('<p><img src="javascript:alert(1)" width="600"></p>'),
+	loadable('<p><img src="javascript:alert(1)" width="600"></p>'),
 	false
 );
 equal(
-	'a definite-size image inside a [hidden] subtree is not (it renders blank)',
-	definite('<div hidden><img src="https://t/p.gif" width="600" height="400"></div>'),
+	'an image inside a [hidden] subtree cannot show anything',
+	loadable('<div hidden><img src="https://t/p.gif" width="600" height="400"></div>'),
 	false
 );
 equal(
-	'a px unit on a real size still counts',
-	definite('<img src="https://cdn/h.png" width="600px">'),
+	'a px unit on a real size is read as a size',
+	loadable('<img src="https://cdn/h.png" width="600px">'),
 	true
 );
-equal('a decimal size still counts', definite('<img src="https://cdn/h.png" width="600.5">'), true);
+equal(
+	'a decimal size is read as a size',
+	loadable('<img src="https://cdn/h.png" width="600.5">'),
+	true
+);
 equal(
 	'a px unit on a pixel size is still a pixel',
-	definite('<img src="https://t/o.gif" width="1px" height="1px">'),
+	loadable('<img src="https://t/o.gif" width="1px" height="1px">'),
 	false
 );
 equal(
-	'a non-numeric size is not evidence either way',
-	definite('<img src="https://t/o.gif" width="abc">'),
-	false
+	'a non-numeric size leaves it ambiguous',
+	loadable('<img src="https://t/o.gif" width="abc">'),
+	true
 );
 equal(
 	'a small number inside the parked URL cannot demote a real image',
-	definite('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2" width="600" height="200">'),
+	loadable('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2" width="600" height="200">'),
 	true
 );
 equal(
 	'alt text mentioning width=1 cannot demote a real image',
-	definite(
+	loadable(
 		'<img src="https://cdn/hero.png" width="600" height="400" alt="chart width=1 height=1">'
 	),
 	true
+);
+
+equal(
+	'a cid: reference this app cannot resolve is not loadable',
+	loadable('<img src="cid:img001">'),
+	false
+);
+equal(
+	'a data: image is loadable (the bytes are already here)',
+	loadable('<img src="data:image/gif;base64,R0lGOD" width="600">'),
+	true
+);
+
+// Text inside an element the UA stylesheet hides must not suppress the text part:
+// `hidden` is not the only such element.
+equal('a <dialog> without open renders nothing', text('<dialog>Full invoice text</dialog>'), false);
+equal('a <dialog open> does render', text('<dialog open>Shown text</dialog>'), true);
+equal('a <datalist> renders nothing', text('<datalist>Real text</datalist>'), false);
+
+// The count is a claim made to the reader, so it must not include images that
+// would still be invisible after loading.
+equal(
+	'a hidden image is blocked but not counted (the notice would be a lie)',
+	blocked('<div hidden><img src="https://t/x.gif" width="600" height="400"></div>'),
+	0
+);
+check(
+	'...though its src is still parked, because a hidden image is fetched by plenty of browsers',
+	prepareEmailHtml('<div hidden><img src="https://t/x.gif"></div>')!.html.includes(
+		BLOCKED_IMAGE_ATTR
+	)
 );
 
 // A `cid:`/`data:` image is never "blocked" (nothing to load, nobody to reach), so
