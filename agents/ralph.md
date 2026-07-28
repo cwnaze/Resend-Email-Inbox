@@ -2,7 +2,7 @@
 
 You are an autonomous coding agent working on a software project.
 
-**Driver:** these instructions describe ONE iteration only and assume a fresh agent with no memory of prior iterations. **This project uses a per-story branch + PR + self-review-loop + self-merge workflow.** Each iteration implements exactly one story, opens a PR, reviews that PR, fixes what the review finds, re-reviews until a pass comes back clean, merges to `main`, and then moves on to the next story. Iterations chain automatically until every story in `prd.json` has `passes: true`.
+**Driver:** these instructions describe ONE iteration only and assume a fresh agent with no memory of prior iterations. **This project uses a per-story branch + PR + self-review-loop + self-merge workflow.** One iteration = one story: implement it, open a PR, review that PR, fix what the review finds, re-review until a pass comes back clean, merge to `main` — then stop. The next story runs in a **fresh session**, so treat `CLAUDE.md`, `progress.txt` and the PRD notes as the only handoff you get and the only handoff you leave.
 
 ## Your Task
 
@@ -36,7 +36,9 @@ You are an autonomous coding agent working on a software project.
     - Re-run `/code-review` on the updated diff.
     - Repeat until a review pass returns **zero findings**. There is no round cap — keep looping. If you find yourself oscillating (the same finding reappearing after a fix, or fixes trading one finding for another across three-plus rounds), stop looping and report the deadlock instead of merging.
 18. Once a review pass is clean and `npm run check` + `npm run lint` + `showboat verify` all pass on the final commit, merge the PR to `main` (`gh pr merge --squash --delete-branch`), then `git checkout main && git pull`.
-19. Go back to step 3 and start the next story. Continue until every story in `prd.json` has `passes: true`.
+19. **Stop.** One story per session: after the merge, report the merged PR URL and say which story is next, then stop. The next story runs in a **fresh session** — the human clears the context (`/clear`) and re-invokes these instructions, which is why step 1 assumes an agent with no memory of prior iterations. Do not start the next story in this session.
+
+    This is the reason steps 10/12/14/15 are not optional busywork: everything the next story needs — patterns, gotchas, why a structure is the way it is — has to be in `CLAUDE.md`, `progress.txt` or the PRD notes **before** the merge, because the agent that picks up the next story cannot see this conversation.
 
 ### Tool Discovery & Usage Rules
 You have two primary specialized tools. Treat their `--help` outputs as your definitive skill specifications:
@@ -121,19 +123,19 @@ If no browser tools are available, note in your progress report that manual brow
 
 ## Stop Condition
 
-Keep cycling story → PR → review → fix → review → merge until one of these is true:
+**Always stop after one story**, whether it merged or not. Report the PR URL, what was verified, and which story is next; the human then clears the session and starts the next one. Never begin a second story in the same session, even if time and context remain.
 
-- Every story in `prd.json` has `passes: true`. Say so explicitly in your final report.
-- The review/fix loop deadlocks on a story (see step 17). Leave the PR open, do not merge, and report what's stuck.
-- A story genuinely cannot be completed (missing credential, ambiguous acceptance criteria, blocked on a decision only the human can make). Report the blocker rather than guessing or faking a pass.
+Three ways an iteration ends:
 
-Report each merged story's PR URL as you go, so progress is visible without waiting for the whole run.
+- **Merged** (the normal case). Report the PR URL and the next story's id. If every story in `prd.json` now has `passes: true`, say so explicitly.
+- **Review deadlock** (see step 17). Leave the PR open, do not merge, and report exactly what's stuck.
+- **Blocked** — a missing credential, ambiguous acceptance criteria, or a decision only the human can make. Report the blocker rather than guessing or marking a story `passes: true` it didn't earn.
 
 ## Important
 
-- Work on ONE story at a time, on its own branch, ending in exactly one merged PR
+- Work on ONE story per session, on its own branch, ending in exactly one merged PR
 - Never merge a PR whose latest review pass still has open findings
-- Never start the next story before the current one's PR is merged and `main` is pulled
+- Never start a second story in the same session — the next one gets a fresh context
 - Commit frequently within the story's branch
 - Keep CI green
 - Read the Codebase Patterns section in progress.txt before starting

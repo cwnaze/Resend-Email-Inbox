@@ -286,8 +286,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 19,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "listInboxThreads (src/lib/server/db/inbox.ts) is one query: a correlated subquery picks each thread's latest is_deleted=0 email for the preview, and because that join is an INNER join it is also what excludes threads whose every email is soft-deleted (no separate NOT EXISTS clause to drift). Pure presentation helpers (bodySnippet/senderLabel/relativeTime) live in src/lib/inbox/format.ts so both the load and the components import them and a tsx script can assert against them; snippets are derived server-side so large HTML bodies never cross the wire. Rows link to /inbox/[threadId] (FR-4), which is a placeholder page until US-G01. Also removed the (app) shell's placeholder 360px thread-list column \u2014 the list belongs to the inbox subtree, not to every (app) route (a future /contacts page would have inherited it); US-G01 reintroduces the list/detail split in inbox/+layout.svelte. 34/34 checks in src/lib/server/db/verify-inbox-list.mts; browser-verified via rodney. See docs/demos/US-F01.md."
     },
     {
       "id": "US-F02",

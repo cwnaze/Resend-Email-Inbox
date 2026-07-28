@@ -22,6 +22,8 @@
 - Normalize the case of any value covered by a SQLite unique index at the write boundary (SQLite's `unique` is case-sensitive); compare with `lower()` on reads so rows written before the normalization existed still match.
 - Idempotence on a natural key is worth enforcing twice: a cheap read up front so the happy path never creates dependent rows it has to undo, plus the unique index underneath as the authority for a genuine concurrent race (undo the dependent row when the index wins).
 - Sanitize untrusted markup on the write path, so the stored column carries the safety invariant and no renderer can forget to re-sanitize.
+- Pick one row per parent with a correlated subquery in the join condition rather than a second query per row: `innerJoin(child, eq(child.id, sql`(select ... limit 1)`))` keeps a list view to one query, and the INNER join then also expresses "parents with no visible child are excluded" — one rule instead of two that can drift.
+- Browser-verifying anything behind an httpOnly session cookie: seed the credential row, then call the real login endpoint with `fetch` **from inside the page**, so the browser applies its `Set-Cookie`. `document.cookie` cannot set an httpOnly cookie.
 - A showboat `exec` block that needs a running dev server plus a secret should be self-contained — export a throwaway secret inline, start the server with it in the environment, `trap`-kill on exit — so `showboat verify` doesn't depend on the gitignored `.env`.
 - Ingestion side effects that are *best-effort* (attachment download/upload) must be swallowed and logged, not thrown: the email row is already committed and the provider's redelivery short-circuits on the duplicate check, so a throw is an unrepairable retry loop.
 - Inject env-reading provider clients (Resend, R2) as a `deps` object into pure-ish server modules instead of importing them — that's what keeps those modules exercisable from a standalone `tsx` verification script with stubs.
@@ -309,4 +311,16 @@
   - Attachments only run when `storeInboundEmail` reports `created` — a redelivery's bytes are already in R2 under the same deterministic key.
   - Deleting inbound rows in a verification script now needs attachments → emails → threads ordering; the remote Turso connection enforces the FK.
   - `no-control-regex` is enabled in this repo's eslint config, so a deliberate control-byte-stripping regex needs an inline disable with a reason.
+---
+
+## [2026-07-27] - US-F01
+- Implemented the inbox thread list: `/inbox`'s server load calls `listInboxThreads` (threads newest-activity-first, joined to each thread's latest non-deleted email for the preview), and `ThreadRow.svelte` renders sender, subject, a server-derived snippet and a relative timestamp with 1px dividers, mono metadata and sans sender/subject.
+- Files changed: `src/lib/server/db/inbox.ts` (new), `src/lib/inbox/format.ts` (new), `src/routes/(app)/inbox/+page.server.ts` (new), `src/routes/(app)/inbox/ThreadRow.svelte` (new), `src/routes/(app)/inbox/+page.svelte`, `src/routes/(app)/inbox/[threadId]/+page.svelte` (new placeholder), `src/routes/(app)/+layout.svelte`, `src/lib/server/db/verify-inbox-list.mts` (new, 34 checks), `agents/prd.json`, `CLAUDE.md`, `docs/demos/US-F01.md`.
+- **Learnings for future iterations:**
+  - `resolve()` from `$app/paths` needs the **route id including the route group** for a dynamic route — `resolve('/(app)/inbox/[threadId]', { threadId })`, not `'/inbox/[threadId]'`. The bare pathname form only typechecks for static routes; the generated union lives in `.svelte-kit/non-ambient.d.ts` if a `resolve` call won't typecheck.
+  - `svelte/no-unused-props` is enabled, so a prop declared now "for the next story to style" fails lint. Either use it or don't declare it.
+  - Picking one row per parent with a correlated subquery in the join condition (`innerJoin(emails, eq(emails.id, sql\`(select ... limit 1)\`))`) keeps the list to a single query *and* makes the INNER join itself express the exclusion rule — one definition of "visible email" instead of a preview subquery plus a separate `NOT EXISTS`.
+  - An httpOnly session cookie can't be set through `document.cookie`, so browser verification can't fake a session the way US-J02's demo did. What works: seed an `auth_codes` row with `hashAuthCode('123456')`, then from the page run `fetch('/api/auth/verify-code', { method: 'POST', body: JSON.stringify({ code: '123456' }) })` — the browser applies the endpoint's `Set-Cookie` itself. No need to drive the login UI or stub anything.
+  - `showboat exec` appends its block even when the command produced nothing, so capturing a `git diff main...HEAD` **before** committing leaves an empty block that fails `showboat verify` later. Commit first, then capture — or edit the stale block out of the document.
+  - `showboat image` copies the file next to the document and rewrites the reference, but the `{image}` source directive keeps pointing at the original path — don't delete the staging file afterwards.
 ---

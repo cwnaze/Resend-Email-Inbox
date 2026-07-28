@@ -76,6 +76,18 @@
 - The R2 key is `inbound/<resend_email_id>/<attachment_id>[-<slugified filename>]`. Resend's attachment id — not the filename — is what makes it unique: two attachments on one email can share a name, and a sender-supplied string must never decide where an object lands. `attachmentFilename` reduces a nullable, sender-controlled filename to one path segment (no traversal), strips control bytes, and falls back to `attachment-<id>`.
 - Cleanup order in any script that deletes inbound rows: **attachments → emails → threads**. The remote Turso connection enforces the `attachments.email_id` FK, so deleting emails first throws `SQLITE_CONSTRAINT`.
 
+## Inbox list (US-F01)
+
+- `src/lib/server/db/inbox.ts`'s `listInboxThreads` is the inbox list query and is deliberately **one** query (FR-1, no per-row N+1): the preview columns come from a correlated subquery picking each thread's latest `is_deleted = 0` email, joined with `innerJoin`. That inner join is load-bearing twice — it supplies the preview _and_ it is what excludes threads whose every member email is soft-deleted. Don't add a separate `NOT EXISTS` for the soft-delete rule; two expressions of "visible email" can drift apart. Ordering is `last_message_at desc, id desc` (the id breaks ties deterministically so a row can't swap places between loads).
+- `src/lib/inbox/format.ts` holds `bodySnippet` / `senderLabel` / `relativeTime` and is **pure** (no env, no db, no DOM) so the server load, the Svelte components and a standalone `tsx` script all import the same code — same rationale as `inbound/parse.ts`. `bodySnippet`'s HTML de-tagging is **not** a sanitizer and its output is only ever inserted as text; inbound HTML is already sanitized on the write path. Snippets are derived in the load, not the component, so a large HTML body never crosses the wire just to render one preview line.
+- `relativeTime` renders a future timestamp as "now" rather than a negative duration — the sender's `Date:` header can be ahead of this machine's clock.
+- **`resolve()` needs the route id including the route group for a dynamic route**: `resolve('/(app)/inbox/[threadId]', { threadId })`, not `'/inbox/[threadId]'` (that only typechecks for static routes). The generated union of valid ids is in `.svelte-kit/non-ambient.d.ts`.
+- `svelte/no-unused-props` is on, so don't declare a prop now for a later story to style — use it or leave it out.
+- `src/routes/(app)/inbox/[threadId]/+page.svelte` is a **placeholder** so the list rows have a real destination (FR-4); US-G01 replaces it wholesale and adds the `+page.server.ts` beside it.
+- The `(app)` shell no longer has the placeholder 360px left column US-J02 stood up: a thread list belongs to the inbox subtree, not to every `(app)` route (a `/contacts` page would have inherited an inbox list beside it). US-G01 reintroduces the list/detail split in `inbox/+layout.svelte`, where the list moves into the fixed column and the `max-w-3xl` cap on the page stops applying.
+- `src/lib/server/db/verify-inbox-list.mts` is the standalone check (pure helpers on fixtures + `listInboxThreads` against the live DB, seeded rows deleted in `finally`). Extend it for US-F02/F03/F04 rather than adding new ad hoc scripts.
+- Browser-verifying a page behind the httpOnly session cookie: `document.cookie` **cannot** set it (that's how US-J02's demo faked one, and it no longer works for a real session). Seed an `auth_codes` row with `hashAuthCode('123456')`, then from the page run `fetch('/api/auth/verify-code', { method: 'POST', body: JSON.stringify({ code: '123456' }) })` — the browser applies the endpoint's own `Set-Cookie`. No need to drive the login UI or stub `window.fetch`.
+
 ## Auth / route protection
 
 - Every mailbox route lives under the `src/routes/(app)/` route group. `src/routes/(app)/+layout.server.ts` is the single choke point: it calls `validateSession(db, cookies)` and redirects to `/login` on `null`. Add new protected pages under `(app)/` and they inherit this automatically — no per-route auth code needed, and never a second parallel check.
@@ -116,7 +128,7 @@
 
 ## App shell
 
-- `src/routes/(app)/+layout.svelte` is the real app shell (US-J02): a top bar (app mark, search input, `POST /api/auth/logout` form) plus a two-pane body — a fixed `w-[360px]` left column (`hidden lg:flex`, Tailwind's `lg` = 1024px matches the design's desktop breakpoint) and a flexible right pane rendering `{@render children()}`. Below `lg` the left column is hidden, giving the single-pane mobile/tablet stack. The left column currently holds placeholder text; US-F01 replaces its contents with the real thread list, US-J03's `EmptyState`/`Skeleton` land inside it too — don't restructure the shell itself for that, just swap what's inside the `<aside>`.
+- `src/routes/(app)/+layout.svelte` is the real app shell (US-J02): a top bar (app mark, search input, `POST /api/auth/logout` form) above a flexible pane rendering `{@render children()}`, with no horizontal scroll down to 375px. US-J02 also gave it a fixed `w-[360px]` left column (`hidden lg:flex`) as a placeholder for the thread list; **US-F01 removed that column** — a thread list belongs to the inbox subtree, not to every `(app)` route (`/contacts` in US-I01 would have inherited one beside it). The list/detail split lands in `inbox/+layout.svelte` in US-G01, so put it there rather than back in the shell.
 - **Any internal `<a href="/...">` (or programmatic navigation) must wrap the path in `resolve(...)` from `$app/paths`** (e.g. `href={resolve('/inbox')}`), not a raw string — this kit version's `svelte/no-navigation-without-resolve` lint rule fails `npm run lint` otherwise. Apply this to every new internal link across the app, not just the shell.
 
 ## Shared components
@@ -128,4 +140,5 @@
 
 ## Workflow
 
-- This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR; the agent opens the PR, runs `/code-review` on it, fixes findings and re-reviews until a pass is clean, then squash-merges to `main` itself and moves to the next story.
+- This repo follows the Ralph per-story branch + PR workflow described in `agents/ralph.md`, driven by `agents/prd.json`. One story per branch/PR; the agent opens the PR, runs `/code-review` on it, fixes findings and re-reviews until a pass is clean, then squash-merges to `main` itself.
+- **One story per session.** After a merge, the next story starts in a fresh session (`/clear`), so each story is implemented by an agent whose context is `main` + the docs rather than the accumulated transcript of earlier stories. That's what makes `agents/ralph.md`, `agents/progress.txt` and this file the actual handoff — anything a later story needs to know has to be written down in one of them before the merge, not left in conversation.
