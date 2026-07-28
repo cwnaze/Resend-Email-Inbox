@@ -430,26 +430,35 @@ equal(
 	visible('<img src="https://cdn/hero.png" width="600" height="400" alt="chart width=1 height=1">'),
 	true
 );
-// The de-tagger backs the *text* fallback, so it must not leak tag fragments
-// either: a `>` inside an attribute value used to end the tag early.
+// The de-tagger is deliberately the naive `<[^>]*>`: a version that skipped
+// quoted attribute values backtracked catastrophically (15s on 4000 bare `<`),
+// and these helpers run for every row of the inbox list. So a sender-controlled
+// `>` inside an attribute does leave a crumb — asserted here so the tradeoff is
+// recorded rather than surprising — and it is only cosmetic, because the body
+// choice is made in the DOM and never from this output.
 equal(
-	'htmlToPlainText does not leak an attribute value containing >',
+	'the naive de-tagger leaves a crumb from a > inside an attribute (accepted tradeoff)',
 	htmlToPlainText('<img src="https://x/a.gif?d=1>2" width="1">'),
-	''
+	'2" width="1">'
 );
-equal(
-	'htmlToPlainText still reads ordinary prose around such a tag',
-	htmlToPlainText('<p>before</p><img src="x?d=1>2"><p>after</p>'),
-	'before\n\nafter'
+check(
+	'de-tagging a long run of bare < is not pathological',
+	(() => {
+		const started = performance.now();
+		htmlToPlainText('<'.repeat(4000));
+		return performance.now() - started < 1000;
+	})()
 );
 
+// `<template>` keeps its children in a separate fragment `querySelectorAll` cannot
+// reach, so the read path drops the element outright...
 check(
 	'the read path drops <template> so its content cannot hide a remote image',
 	prepareEmailHtml('<p>hi</p><template><img src="http://t/px.gif"></template>')!.html ===
 		'<p>hi</p>'
 );
-// ...but the *write* path must not, or the only copy of the message loses the
-// text inside it (DOMPurify's default FORBID_CONTENTS includes `template`, and
+// ...but the *write* path must not, or the only copy of the message loses the text
+// inside it (DOMPurify's default FORBID_CONTENTS includes `template`, and
 // AMP-for-Email bodies carry their content exactly that way).
 check(
 	'the write path keeps text inside a <template> rather than deleting it',

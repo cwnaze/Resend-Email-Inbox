@@ -1,7 +1,7 @@
 # US-G02: Sanitized HTML rendering with image opt-in
 
-*2026-07-28T18:40:12Z by Showboat 0.6.1*
-<!-- showboat-id: 72f928a1-8ce2-46ae-b01d-48ab46d226f2 -->
+*2026-07-28T18:57:43Z by Showboat 0.6.1*
+<!-- showboat-id: bdddf267-b594-470f-a648-2861232569ff -->
 
 **US-G02 — Sanitized HTML rendering with image opt-in.** An HTML email body now renders inside a sandboxed `<iframe srcdoc>` (`sandbox="allow-same-origin"`, never `allow-scripts`) sized to its content height. Every remote `<img src>` is moved aside on the server before the markup crosses the wire, so nothing in a stored body reaches a third party on open; a per-message **Load images** button puts them back for that one message. A message with only `body_text` renders as preformatted, wrapped plain text and mounts no iframe at all.
 
@@ -24,6 +24,7 @@ Three things the sandbox does **not** give you for free. All three were found by
 - **A sandbox without `allow-popups` does not make links inert.** A plain `<a href>` navigates the frame *itself*, which sandbox always permits — so a phishing link rendered the attacker's page inside this app's chrome, and the frame went cross-origin, silently killing the height measurement with it. The fix is declarative: the srcdoc carries `<base target="_blank">`, and opening a new context is exactly what the sandbox blocks, so the worst case is "nothing happens" even with no JS. The component's click handler is an upgrade on top, turning that into a real new tab.
 - **`documentElement.scrollHeight` is floored at the frame's own viewport height**, so measuring it returns whatever height was last set: the frame could only ever grow, never shrink, and every short message was padded out to the initial guess. The content height comes from the **body** box instead.
 - **A body's last bottom margin collapses through the body**, so `body.scrollHeight` alone stopped short of the final line and clipped it. The srcdoc stylesheet sets `display: flow-root` on the body to contain that margin — load-bearing for sizing, not cosmetic.
+- **A regex that skips quoted attribute values backtracks catastrophically.** One was added here to stop a sender-controlled `>` inside an attribute from ending a tag early; it turned 6ms into **15 seconds** on a body of 4000 bare `<` characters, and these helpers run for every row of the inbox list. Reverted to the naive form: the leak it fixed is cosmetic now that the body choice is made in the DOM, and a denial of service is not worth a tidier snippet.
 - **`<template>` content is invisible to `querySelectorAll`** (it lives in a separate fragment), so a remote image parked inside one was neither blocked nor counted. It is forbidden on the **read** path only: doing it on the shared write path deletes the text inside the element from the only copy of the message, and AMP-for-Email bodies carry their content exactly that way.
 
 ## Quality checks
@@ -86,10 +87,14 @@ body choice: prepareEmailHtml.hasVisibleContent
   ok   an image whose src the sanitizer removed is not visible content
   ok   a > inside the parked URL cannot masquerade as body text
   ok   a negative declared dimension is not evidence of a real image
+  ok   a px unit on a real size still counts
+  ok   a decimal size still counts
+  ok   a px unit on a pixel size is still a pixel
+  ok   a non-numeric size is not evidence either way
   ok   a small number inside the parked URL cannot demote a real image
   ok   alt text mentioning width=1 cannot demote a real image
-  ok   htmlToPlainText does not leak an attribute value containing >
-  ok   htmlToPlainText still reads ordinary prose around such a tag
+  ok   the naive de-tagger leaves a crumb from a > inside an attribute (accepted tradeoff)
+  ok   de-tagging a long run of bare < is not pathological
   ok   the read path drops <template> so its content cannot hide a remote image
   ok   the write path keeps text inside a <template> rather than deleting it
 buildEmailSrcdoc
@@ -107,7 +112,7 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/db/verify-inbox-list.m
 ```
 
 ```output
-147/147 checks passed
+151/151 checks passed
 ```
 
 ## Browser verification
@@ -268,7 +273,9 @@ Every part of that sentence is a bug fix, because a sender controls both the URL
 - treating an *unknown* size as "could be real" meant a dimensionless tracking pixel — the common kind, sized by the CSS this app strips — counted as content and discarded the readable text part;
 - and the de-tagger's `<[^>]*>` stopped at the first `>`, so a tracker only had to put `>` in a query string to leak `2">` as "visible text" and suppress the text alternative.
 
-An `<img>` whose `src` the sanitizer removed also no longer counts as content. All three threads below come from one seeder.
+An `<img>` whose `src` the sanitizer removed also no longer counts as content, text inside a `[hidden]` element does not count as visible, and the pixel threshold is 16px rather than 3 (at 3 a tracker escaped it by declaring `width="4"`).
+
+The one thing the flag deliberately does **not** decide is reachability: a retail email that is one hero image sized by a stripped `style="width:600px"` has no declared size to vouch for, so when there is no text part either, the frame is rendered anyway — an empty-ish frame keeping the "images blocked" notice and its toggle beats the italic "no body" line with no affordance at all. All three threads below come from one seeder.
 
 ```bash
 node --env-file=.env node_modules/.bin/tsx src/lib/server/db/seed-g02-pixel.mts
@@ -309,7 +316,7 @@ seeded pixel thread
 ![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](/private/tmp/claude-501/-Users-bloodintern1-Desktop-Resend-Email-Inbox/04f39db3-4c26-412a-b51d-fdebda8a45cc/scratchpad/g02-fixed.png)
 ```
 
-![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](3a96bd01-2026-07-28.png)
+![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](076fef90-2026-07-28.png)
 
 ### Cleanup
 

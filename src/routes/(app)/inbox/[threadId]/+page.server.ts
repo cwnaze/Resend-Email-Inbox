@@ -77,7 +77,16 @@ export const load: PageServerLoad = async ({ params }) => {
 			// message — and if there is no text part either, `html` stays null so
 			// `ThreadMessage` renders its explicit "no body" line instead of an empty
 			// 24px frame with nothing in it and nothing to explain it.
-			const useHtml = prepared !== null && prepared.hasVisibleContent;
+			// Render the HTML when it shows something. The second arm is the escape
+			// hatch for a message with no text part at all: an image-only retail email
+			// sized by a stripped `style` attribute has no *declared* size, so
+			// `hasVisibleContent` can't vouch for it — but rendering a frame with the
+			// "images blocked" notice and a Load images button beats the italic "no
+			// body" line, which would leave a real hero image with no affordance to
+			// reach it. With no images and no text, `html` stays null and that italic
+			// line is the honest answer.
+			const useHtml =
+				prepared !== null && (prepared.hasVisibleContent || (text === '' && prepared.hasAnyImage));
 			return {
 				id: message.id,
 				sender: senderLabel(message.fromName, message.fromEmail),

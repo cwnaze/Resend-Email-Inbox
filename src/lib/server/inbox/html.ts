@@ -32,6 +32,17 @@ export interface PreparedEmailHtml {
 	/** How many images were blocked — 0 means the toggle isn't worth showing. */
 	blockedImageCount: number;
 	/**
+	 * Whether this HTML has any image that could actually load — used only to tell
+	 * "nothing at all" apart from "an image whose size we can't judge".
+	 *
+	 * A retail email is routinely one hero image sized by `style="width:600px"`,
+	 * which the sanitizer strips, leaving no declared size at all. Treating that as
+	 * "no content" made such a message render the italic "no body" line with no
+	 * frame and no toggle — strictly worse than an empty frame, which at least keeps
+	 * the "images blocked" notice and a way to load them.
+	 */
+	hasAnyImage: boolean;
+	/**
 	 * Whether this HTML shows the reader anything: real text, or an image that is
 	 * demonstrably not a tracking pixel.
 	 *
@@ -49,8 +60,15 @@ export interface PreparedEmailHtml {
 /**
  * `width`/`height` at or below this means a spacer or a tracking pixel, not
  * something anyone is meant to see.
+ *
+ * 16 rather than a literal 1: a 1×1 gif is the canonical tracker but 4×4 and 10×10
+ * ones exist, and at 3 the test was bypassed by simply declaring `width="4"`. No
+ * real email's entire visible content is a 16px image, so the false-positive risk
+ * is negligible while the trivial bypass is gone. It cannot be made airtight — a
+ * tracker can always declare `width="600"` — which is why choosing HTML now never
+ * *destroys* the text part's reachability (see `hasAnyImage`).
  */
-const TRACKING_PIXEL_MAX_PX = 3;
+const TRACKING_PIXEL_MAX_PX = 16;
 
 /**
  * A declared dimension, split by unit; both `null` when it isn't a number.
@@ -108,6 +126,25 @@ function isLocalSource(src: string): boolean {
 }
 
 /**
+ * Whether the container holds text that will actually be rendered.
+ *
+ * `textContent` alone counts text that renders nothing: `<div hidden>x</div>`
+ * survives sanitization, the UA stylesheet hides it, and counting its "x" made a
+ * body of one hidden token plus a tracking pixel beat a readable `text/plain` part
+ * — leaving the reader a blank 24px frame. Hidden subtrees are removed from a
+ * *clone*, so the markup that gets rendered is untouched.
+ *
+ * `style="display:none"` cannot be caught this way: the sanitizer drops `style` on
+ * the write path, so by the time this runs the element is genuinely visible. That
+ * limitation is real and documented rather than papered over.
+ */
+function hasVisibleText(container: Element): boolean {
+	const probe = container.cloneNode(true) as Element;
+	for (const hidden of probe.querySelectorAll('[hidden]')) hidden.remove();
+	return (probe.textContent ?? '').trim() !== '';
+}
+
+/**
  * Sanitizes a stored HTML body and moves every remote image `src` aside.
  *
  * Re-sanitizing is intentional even though the write path already did
@@ -155,6 +192,7 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 
 	let blockedImageCount = 0;
 	let hasDefiniteImage = false;
+	let hasAnyImage = false;
 	for (const image of container.querySelectorAll('img')) {
 		const src = image.getAttribute('src');
 
@@ -163,7 +201,10 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 		// look like it has content. Checking this *before* the size test is the fix
 		// for a body of `<img src="javascript:…" width="600">` mounting an empty
 		// frame while a readable text part was thrown away.
-		if (src !== null && isDefiniteImage(image)) hasDefiniteImage = true;
+		if (src !== null) {
+			hasAnyImage = true;
+			if (isDefiniteImage(image)) hasDefiniteImage = true;
+		}
 
 		// A `src` DOMPurify rejected is already gone by now, which is why parking one
 		// can never reintroduce a scheme the sanitizer refused.
@@ -179,8 +220,7 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 	return {
 		html: clean,
 		blockedImageCount,
-		// `textContent` is the text that will actually render — no attribute values,
-		// no tag fragments, nothing a sender can smuggle past a regex.
-		hasVisibleContent: (container.textContent ?? '').trim() !== '' || hasDefiniteImage
+		hasAnyImage,
+		hasVisibleContent: hasVisibleText(container) || hasDefiniteImage
 	};
 }
