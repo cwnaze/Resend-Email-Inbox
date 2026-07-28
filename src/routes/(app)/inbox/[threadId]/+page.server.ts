@@ -77,16 +77,27 @@ export const load: PageServerLoad = async ({ params }) => {
 			// message — and if there is no text part either, `html` stays null so
 			// `ThreadMessage` renders its explicit "no body" line instead of an empty
 			// 24px frame with nothing in it and nothing to explain it.
-			// Render the HTML when it shows something. The second arm is the escape
-			// hatch for a message with no text part at all: an image-only retail email
-			// sized by a stripped `style` attribute has no *declared* size, so
-			// `hasVisibleContent` can't vouch for it — but rendering a frame with the
-			// "images blocked" notice and a Load images button beats the italic "no
-			// body" line, which would leave a real hero image with no affordance to
-			// reach it. With no images and no text, `html` stays null and that italic
-			// line is the honest answer.
-			const useHtml =
-				prepared !== null && (prepared.hasVisibleContent || (text === '' && prepared.hasAnyImage));
+			// Two independent decisions, deliberately not one either/or — that either/or
+			// was the source of a whole family of bugs.
+			//
+			// A frame is mounted when there is anything to frame: real text, an image
+			// that is demonstrably not a tracking pixel, or any remote image we blocked
+			// (the reader may want to load it, and the notice is how they learn it
+			// exists). Nothing to frame — an empty body, or one whose only image is an
+			// unresolvable `cid:` reference — leaves `html` null so the honest "no body"
+			// line can render instead of a blank frame.
+			//
+			// The text part is dropped **only** when the HTML has real text of its own.
+			// It is never dropped on the strength of the image heuristic, because that
+			// heuristic is always one attribute away from being wrong (`width="17"` on a
+			// tracking pixel), and being wrong used to mean a readable message with no
+			// way to reach it. So a frame whose content we cannot vouch for is shown
+			// *with* the text beneath it, and the reader loses nothing either way.
+			const showFrame =
+				prepared !== null &&
+				(prepared.hasVisibleText || prepared.hasDefiniteImage || prepared.blockedImageCount > 0);
+			const showText = prepared === null || !prepared.hasVisibleText;
+
 			return {
 				id: message.id,
 				sender: senderLabel(message.fromName, message.fromEmail),
@@ -95,9 +106,9 @@ export const load: PageServerLoad = async ({ params }) => {
 				cc: addressListLabel(message.ccEmails),
 				receivedAt: message.receivedAt,
 				timestamp: absoluteTime(message.receivedAt),
-				html: useHtml ? prepared.html : null,
-				blockedImageCount: useHtml ? prepared.blockedImageCount : 0,
-				body: useHtml ? '' : text
+				html: showFrame ? prepared!.html : null,
+				blockedImageCount: showFrame ? prepared!.blockedImageCount : 0,
+				body: showText ? text : ''
 			};
 		})
 	};

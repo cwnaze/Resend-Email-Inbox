@@ -346,128 +346,123 @@ check(
 	prepareEmailHtml('<meta http-equiv="refresh" content="0;url=https://evil.example">') === null
 );
 
-console.log('body choice: prepareEmailHtml.hasVisibleContent');
-// This decision is made in the DOM, inside `prepareEmailHtml`, and every case
-// below is one a previous pattern-matching version got wrong. A sender controls
-// both the URL and the attribute text of an `<img>`, so a regex over the finished
-// markup could be steered into either answer.
-const visible = (html: string) => prepareEmailHtml(html)?.hasVisibleContent ?? null;
+console.log('body choice: hasVisibleText / hasDefiniteImage / blockedImageCount');
+// The rule these back, and the reason it is shaped this way: the text part is
+// dropped ONLY when the HTML has real text of its own. Six review rounds of
+// deciding it from a size heuristic over the images produced a bypass at every
+// threshold (`width="4"`, then `width="17"`), and each bypass silently discarded a
+// readable message. So the heuristic no longer gets to decide that — it only
+// decides whether a frame is worth mounting.
+const text = (html: string) => prepareEmailHtml(html)?.hasVisibleText ?? null;
+const definite = (html: string) => prepareEmailHtml(html)?.hasDefiniteImage ?? null;
+const blocked = (html: string) => prepareEmailHtml(html)?.blockedImageCount ?? null;
 
-equal('prose is visible content', visible('<p>Hello</p>'), true);
-equal('markup with nothing in it is not', visible('<div><br></div>'), false);
+equal('prose is visible text', text('<p>Hello</p>'), true);
+equal('markup with nothing in it is not', text('<div><br></div>'), false);
 equal(
-	'a style-hidden preheader still counts as visible (style is stripped on write)',
-	visible('<div style="display:none">preheader junk</div>'),
+	'an image-only body has no visible text',
+	text('<img src="https://cdn/h.png" width="600">'),
+	false
+);
+equal(
+	'a style-hidden preheader still counts as visible text (style is stripped on write)',
+	text('<div style="display:none">preheader junk</div>'),
 	true
 );
 equal(
-	'a hero image with px dimensions is visible content',
-	visible('<img src="https://cdn/h.png" width="600" height="400">'),
-	true
-);
-equal(
-	'a responsive hero image sized in % is visible content',
-	visible('<img src="https://cdn/h.png" width="100%">'),
-	true
-);
-equal(
-	'text inside a [hidden] element does not count as visible (it renders nothing)',
-	visible('<div hidden>x</div><img src="https://t/p.gif" width="1" height="1">'),
+	'text inside a [hidden] element does not (it renders nothing)',
+	text('<div hidden>x</div>'),
 	false
 );
 check(
 	'...but the hidden element is still rendered as written (the text test must not mutate the body)',
 	prepareEmailHtml('<div hidden>keepme</div><p>hi</p>')!.html.includes('keepme')
 );
+
 equal(
-	'a 16x16 logo alone is not a reason to prefer HTML over a text part',
-	visible('<img src="https://cdn/logo.png" width="16" height="16">'),
-	false
+	'a hero image with px dimensions is a definite image',
+	definite('<img src="https://cdn/h.png" width="600" height="400">'),
+	true
 );
 equal(
-	'a 17x17 image is above the pixel threshold',
-	visible('<img src="https://cdn/logo.png" width="17" height="17">'),
+	'a responsive hero sized in % is too',
+	definite('<img src="https://cdn/h.png" width="100%">'),
 	true
 );
 equal(
 	'a 1x1 tracking pixel is not',
-	visible('<img src="https://t/o.gif" width="1" height="1">'),
+	definite('<img src="https://t/o.gif" width="1" height="1">'),
 	false
 );
 equal(
 	'a 600x1 spacer rule is not',
-	visible('<img src="https://cdn/r.png" width="600" height="1">'),
-	false
-);
-// The four inputs that previously suppressed a readable text part:
-equal(
-	'a dimensionless tracking pixel is not visible content (CSS-sized trackers are the common kind)',
-	visible('<img src="https://track.example/o.gif?id=1" alt="">'),
+	definite('<img src="https://cdn/r.png" width="600" height="1">'),
 	false
 );
 equal(
-	'an image whose src the sanitizer removed is not visible content',
-	visible('<p><img src="javascript:alert(1)" width="600"></p>'),
+	'a 16x16 logo is not',
+	definite('<img src="https://cdn/logo.png" width="16" height="16">'),
 	false
 );
 equal(
-	'a > inside the parked URL cannot masquerade as body text',
-	visible('<img src="https://track.example/o.gif?d=1>2" width="1" height="1">'),
-	false
-);
-equal(
-	'a negative declared dimension is not evidence of a real image',
-	visible('<img src="https://track.example/o.gif" width="-1" height="-1">'),
-	false
-);
-// Hand-written email HTML puts units and decimals in these attributes even though
-// the spec doesn't allow them. Reading those as "no size declared" would make a
-// real hero image lose to a "view in browser" text stub.
-equal(
-	'a px unit on a real size still counts',
-	visible('<img src="https://cdn/h.png" width="600px">'),
+	'a 17x17 image is',
+	definite('<img src="https://cdn/logo.png" width="17" height="17">'),
 	true
 );
-equal('a decimal size still counts', visible('<img src="https://cdn/h.png" width="600.5">'), true);
+equal(
+	'a dimensionless image is not (CSS-sized trackers are the common kind)',
+	definite('<img src="https://t/o.gif?id=1">'),
+	false
+);
+equal(
+	'an image whose src the sanitizer removed is not',
+	definite('<p><img src="javascript:alert(1)" width="600"></p>'),
+	false
+);
+equal(
+	'a definite-size image inside a [hidden] subtree is not (it renders blank)',
+	definite('<div hidden><img src="https://t/p.gif" width="600" height="400"></div>'),
+	false
+);
+equal(
+	'a px unit on a real size still counts',
+	definite('<img src="https://cdn/h.png" width="600px">'),
+	true
+);
+equal('a decimal size still counts', definite('<img src="https://cdn/h.png" width="600.5">'), true);
 equal(
 	'a px unit on a pixel size is still a pixel',
-	visible('<img src="https://t/o.gif" width="1px" height="1px">'),
+	definite('<img src="https://t/o.gif" width="1px" height="1px">'),
 	false
 );
 equal(
 	'a non-numeric size is not evidence either way',
-	visible('<img src="https://t/o.gif" width="abc">'),
+	definite('<img src="https://t/o.gif" width="abc">'),
 	false
 );
 equal(
 	'a small number inside the parked URL cannot demote a real image',
-	visible('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2" width="600" height="200">'),
+	definite('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2" width="600" height="200">'),
 	true
 );
 equal(
 	'alt text mentioning width=1 cannot demote a real image',
-	visible('<img src="https://cdn/hero.png" width="600" height="400" alt="chart width=1 height=1">'),
+	definite(
+		'<img src="https://cdn/hero.png" width="600" height="400" alt="chart width=1 height=1">'
+	),
 	true
 );
-// The de-tagger is deliberately the naive `<[^>]*>`: a version that skipped
-// quoted attribute values backtracked catastrophically (15s on 4000 bare `<`),
-// and these helpers run for every row of the inbox list. So a sender-controlled
-// `>` inside an attribute does leave a crumb — asserted here so the tradeoff is
-// recorded rather than surprising — and it is only cosmetic, because the body
-// choice is made in the DOM and never from this output.
+
+// A `cid:`/`data:` image is never "blocked" (nothing to load, nobody to reach), so
+// a body whose only content is one mounts no frame — the honest "no body" line
+// renders instead of a blank frame with no notice and no toggle.
+equal('a cid: image is not counted as blocked', blocked('<img src="cid:img001">'), 0);
 equal(
-	'the naive de-tagger leaves a crumb from a > inside an attribute (accepted tradeoff)',
-	htmlToPlainText('<img src="https://x/a.gif?d=1>2" width="1">'),
-	'2" width="1">'
+	'a data: image is not counted as blocked',
+	blocked('<img src="data:image/gif;base64,R0lGOD">'),
+	0
 );
-check(
-	'de-tagging a long run of bare < is not pathological',
-	(() => {
-		const started = performance.now();
-		htmlToPlainText('<'.repeat(4000));
-		return performance.now() - started < 1000;
-	})()
-);
+equal('a remote image is', blocked('<img src="https://t/o.gif">'), 1);
 
 // `<template>` keeps its children in a separate fragment `querySelectorAll` cannot
 // reach, so the read path drops the element outright...

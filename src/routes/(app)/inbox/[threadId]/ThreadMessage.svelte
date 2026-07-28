@@ -8,11 +8,16 @@
 	 * measure, and a thin 1px divider between messages rather than a card with a
 	 * shadow.
 	 *
-	 * Body rendering (US-G02) is one of two branches and never both: an HTML body
-	 * goes to `EmailHtmlBody` (a sandboxed iframe), and a message with only
-	 * `body_text` renders here as preformatted, wrapped plain text with no iframe
-	 * involved. Nothing in this file uses `{@html}` — stored markup is never
-	 * injected into *this* document, only into the sandboxed one.
+	 * Body rendering (US-G02) is **not** an either/or: the load can send an HTML body
+	 * (rendered by `EmailHtmlBody` in a sandboxed iframe), a plain-text body, or
+	 * both. Both happens when the HTML has no readable text of its own — a frame
+	 * whose content can't be vouched for is shown *with* the text beneath it, so a
+	 * message can never become unreachable because a tracking pixel talked the load
+	 * into preferring markup that renders blank. Neither happens only when there is
+	 * genuinely nothing to show, and then the "no body" line is the honest answer.
+	 *
+	 * Nothing in this file uses `{@html}` — stored markup is never injected into
+	 * *this* document, only into the sandboxed one.
 	 */
 	import EmailHtmlBody from './EmailHtmlBody.svelte';
 
@@ -80,7 +85,9 @@
 			blockedImageCount={message.blockedImageCount}
 			title={`Message from ${message.sender}`}
 		/>
-	{:else if message.body}
+	{/if}
+
+	{#if message.body}
 		<!--
 			A text-only body: preformatted so the message's own line breaks survive
 			(`whitespace-pre-wrap` also wraps to the reading measure), in the app's
@@ -89,7 +96,9 @@
 		-->
 		<pre
 			class="mt-3 max-w-[72ch] font-sans text-sm leading-relaxed break-words whitespace-pre-wrap text-text-primary">{message.body}</pre>
-	{:else}
+	{/if}
+
+	{#if !message.html && !message.body}
 		<p class="mt-3 font-sans text-sm text-text-muted italic">This message has no body.</p>
 	{/if}
 </article>

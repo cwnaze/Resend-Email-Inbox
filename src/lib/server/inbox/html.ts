@@ -32,19 +32,15 @@ export interface PreparedEmailHtml {
 	/** How many images were blocked — 0 means the toggle isn't worth showing. */
 	blockedImageCount: number;
 	/**
-	 * Whether this HTML has any image that could actually load — used only to tell
-	 * "nothing at all" apart from "an image whose size we can't judge".
+	 * Whether this HTML contains text the reader will actually see.
 	 *
-	 * A retail email is routinely one hero image sized by `style="width:600px"`,
-	 * which the sanitizer strips, leaving no declared size at all. Treating that as
-	 * "no content" made such a message render the italic "no body" line with no
-	 * frame and no toggle — strictly worse than an empty frame, which at least keeps
-	 * the "images blocked" notice and a way to load them.
-	 */
-	hasAnyImage: boolean;
-	/**
-	 * Whether this HTML shows the reader anything: real text, or an image that is
-	 * demonstrably not a tracking pixel.
+	 * This is the **only** thing allowed to suppress a message's `text/plain` part,
+	 * and that is a hard-won rule: for six review rounds the thread view decided
+	 * "HTML or text?" from a size heuristic over the images, and every threshold was
+	 * one attribute away from being bypassed (`width="4"`, then `width="17"`) — each
+	 * bypass silently discarding a readable text body with no way to reach it. A
+	 * heuristic cannot win that argument, so it no longer gets to: unless the HTML
+	 * has real text, the text part is rendered too.
 	 *
 	 * Decided **here, from the DOM**, and that is the whole point. Every previous
 	 * attempt to answer this by pattern-matching the finished markup was defeated
@@ -54,7 +50,12 @@ export interface PreparedEmailHtml {
 	 * `2">` and counted as "visible text"). Attributes are attributes here, and
 	 * `textContent` is text.
 	 */
-	hasVisibleContent: boolean;
+	hasVisibleText: boolean;
+	/**
+	 * Whether some image here is demonstrably not a tracking pixel — used only to
+	 * decide whether a frame is worth mounting at all, never to suppress text.
+	 */
+	hasDefiniteImage: boolean;
 }
 
 /**
@@ -64,9 +65,9 @@ export interface PreparedEmailHtml {
  * 16 rather than a literal 1: a 1×1 gif is the canonical tracker but 4×4 and 10×10
  * ones exist, and at 3 the test was bypassed by simply declaring `width="4"`. No
  * real email's entire visible content is a 16px image, so the false-positive risk
- * is negligible while the trivial bypass is gone. It cannot be made airtight — a
- * tracker can always declare `width="600"` — which is why choosing HTML now never
- * *destroys* the text part's reachability (see `hasAnyImage`).
+ * is negligible. It cannot be made airtight — a tracker can always declare
+ * `width="600"` — which is exactly why this flag no longer decides whether the
+ * reader keeps access to the `text/plain` part. Only `hasVisibleText` does that.
  */
 const TRACKING_PIXEL_MAX_PX = 16;
 
@@ -123,6 +124,14 @@ function isDefiniteImage(image: Element): boolean {
 function isLocalSource(src: string): boolean {
 	const value = src.trim().toLowerCase();
 	return value.startsWith('data:') || value.startsWith('cid:');
+}
+
+/** Whether the element sits inside a `[hidden]` subtree, which the UA hides. */
+function isHidden(element: Element): boolean {
+	for (let node: Element | null = element; node !== null; node = node.parentElement) {
+		if (node.hasAttribute('hidden')) return true;
+	}
+	return false;
 }
 
 /**
@@ -203,19 +212,15 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 
 	let blockedImageCount = 0;
 	let hasDefiniteImage = false;
-	let hasAnyImage = false;
 	for (const image of container.querySelectorAll('img')) {
 		const src = image.getAttribute('src');
 
 		// An image with no `src` at all — including one whose `javascript:` src
 		// DOMPurify just removed — can never render, so it must not make the body
-		// look like it has content. Checking this *before* the size test is the fix
-		// for a body of `<img src="javascript:…" width="600">` mounting an empty
-		// frame while a readable text part was thrown away.
-		if (src !== null) {
-			hasAnyImage = true;
-			if (isDefiniteImage(image)) hasDefiniteImage = true;
-		}
+		// look like it has something to show. Nor can one inside a `[hidden]`
+		// subtree, which the UA stylesheet hides: a `<div hidden>` wrapping a
+		// 600×400 image used to mount a frame that renders completely blank.
+		if (src !== null && !isHidden(image) && isDefiniteImage(image)) hasDefiniteImage = true;
 
 		// A `src` DOMPurify rejected is already gone by now, which is why parking one
 		// can never reintroduce a scheme the sanitizer refused.
@@ -231,7 +236,7 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 	return {
 		html: clean,
 		blockedImageCount,
-		hasAnyImage,
-		hasVisibleContent: hasVisibleText(container) || hasDefiniteImage
+		hasVisibleText: hasVisibleText(container),
+		hasDefiniteImage
 	};
 }

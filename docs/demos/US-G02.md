@@ -1,7 +1,7 @@
 # US-G02: Sanitized HTML rendering with image opt-in
 
-*2026-07-28T18:57:43Z by Showboat 0.6.1*
-<!-- showboat-id: bdddf267-b594-470f-a648-2861232569ff -->
+*2026-07-28T19:09:17Z by Showboat 0.6.1*
+<!-- showboat-id: 9fe53fdb-25ae-42aa-8099-20867dcb4969 -->
 
 **US-G02 — Sanitized HTML rendering with image opt-in.** An HTML email body now renders inside a sandboxed `<iframe srcdoc>` (`sandbox="allow-same-origin"`, never `allow-scripts`) sized to its content height. Every remote `<img src>` is moved aside on the server before the markup crosses the wire, so nothing in a stored body reaches a third party on open; a per-message **Load images** button puts them back for that one message. A message with only `body_text` renders as preformatted, wrapped plain text and mounts no iframe at all.
 
@@ -75,26 +75,31 @@ prepareEmailHtml
   ok   drops remote media src outright
   ok   never parks a javascript: src
   ok   a meta refresh cannot survive to redirect the frame
-body choice: prepareEmailHtml.hasVisibleContent
-  ok   prose is visible content
+body choice: hasVisibleText / hasDefiniteImage / blockedImageCount
+  ok   prose is visible text
   ok   markup with nothing in it is not
-  ok   a style-hidden preheader still counts as visible (style is stripped on write)
-  ok   a hero image with px dimensions is visible content
-  ok   a responsive hero image sized in % is visible content
+  ok   an image-only body has no visible text
+  ok   a style-hidden preheader still counts as visible text (style is stripped on write)
+  ok   text inside a [hidden] element does not (it renders nothing)
+  ok   ...but the hidden element is still rendered as written (the text test must not mutate the body)
+  ok   a hero image with px dimensions is a definite image
+  ok   a responsive hero sized in % is too
   ok   a 1x1 tracking pixel is not
   ok   a 600x1 spacer rule is not
-  ok   a dimensionless tracking pixel is not visible content (CSS-sized trackers are the common kind)
-  ok   an image whose src the sanitizer removed is not visible content
-  ok   a > inside the parked URL cannot masquerade as body text
-  ok   a negative declared dimension is not evidence of a real image
+  ok   a 16x16 logo is not
+  ok   a 17x17 image is
+  ok   a dimensionless image is not (CSS-sized trackers are the common kind)
+  ok   an image whose src the sanitizer removed is not
+  ok   a definite-size image inside a [hidden] subtree is not (it renders blank)
   ok   a px unit on a real size still counts
   ok   a decimal size still counts
   ok   a px unit on a pixel size is still a pixel
   ok   a non-numeric size is not evidence either way
   ok   a small number inside the parked URL cannot demote a real image
   ok   alt text mentioning width=1 cannot demote a real image
-  ok   the naive de-tagger leaves a crumb from a > inside an attribute (accepted tradeoff)
-  ok   de-tagging a long run of bare < is not pathological
+  ok   a cid: image is not counted as blocked
+  ok   a data: image is not counted as blocked
+  ok   a remote image is
   ok   the read path drops <template> so its content cannot hide a remote image
   ok   the write path keeps text inside a <template> rather than deleting it
 buildEmailSrcdoc
@@ -112,7 +117,7 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/db/verify-inbox-list.m
 ```
 
 ```output
-151/151 checks passed
+156/156 checks passed
 ```
 
 ## Browser verification
@@ -257,25 +262,18 @@ still sized to its content, and it shrank rather than only growing:
 true
 ```
 
-### Choosing between a text part and an HTML part
+### Which body a message renders
 
-The third acceptance criterion is about a message with *only* `body_text`, but the interesting cases have **both**, and they cut in opposite directions:
+The third acceptance criterion is about a message with *only* `body_text`, but the hard cases have **both** parts, and six rounds of review turned this from an either/or into two independent decisions:
 
-- HTML that is only a spacer plus a tracking pixel sanitizes to non-empty markup that renders **blank**. Preferring it would hide the message behind an empty frame and a "1 image blocked" notice.
-- HTML that is one hero image (a retail email) **is** the message, and its text part is a "View this email in your browser" stub. Demanding *text* would throw the real message away.
-- And when the HTML shows nothing *and* there is no text part, neither branch applies: the explicit "no body" line has to win, not an empty frame.
+- A **frame** is mounted when there is anything to frame: real text, an image that is demonstrably not a tracking pixel, or any remote image that was blocked (the reader may want to load it, and the notice is how they learn it exists). Nothing to frame — an empty body, or one whose only image is an unresolvable `cid:` reference — leaves `html` null so the honest "no body" line renders instead of a blank frame.
+- The **text part** is dropped *only* when the HTML has readable text of its own.
 
-So the choice is one flag, `prepared.hasVisibleContent`, computed **in the DOM** inside `prepareEmailHtml`: `textContent` for text, and for images a *positive* size declaration (px above pixel range, or a percentage, which is how responsive hero images are sized and which no tracker uses).
+That second rule is the whole lesson. Earlier versions decided it from a size heuristic over the images, and every threshold was one attribute away from being bypassed — `width="4"`, then `width="17"` — with each bypass silently discarding a readable message and leaving no way to reach it. A heuristic cannot win that argument, so it no longer gets to: a frame whose content cannot be vouched for is shown *with* the text beneath it, and the reader loses nothing either way.
 
-Every part of that sentence is a bug fix, because a sender controls both the URL and the attribute text of an `<img>`, and three successive pattern-matching versions were steered by it:
+The image heuristic still decides whether a frame is worth mounting, and it is computed **in the DOM** inside `prepareEmailHtml` — `textContent` for text (skipping `[hidden]` subtrees, which render nothing), and for images a positive size declaration, ignoring images with no `src` and images inside hidden subtrees. Never by pattern-matching the finished markup: a sender controls both the URL and the attribute text of an `<img>`, so a regex there read `hero.png?height=2` as a 2px image, and a de-tagging regex stopping at the first `>` let a `>` in a query string masquerade as body text.
 
-- a regex over the finished `<img …>` tag also read the URL parked on `data-dt-blocked-src`, so `hero.png?height=2` looked like a 2px image and discarded a retail email's only content (the seeded hero URL still carries that parameter);
-- treating an *unknown* size as "could be real" meant a dimensionless tracking pixel — the common kind, sized by the CSS this app strips — counted as content and discarded the readable text part;
-- and the de-tagger's `<[^>]*>` stopped at the first `>`, so a tracker only had to put `>` in a query string to leak `2">` as "visible text" and suppress the text alternative.
-
-An `<img>` whose `src` the sanitizer removed also no longer counts as content, text inside a `[hidden]` element does not count as visible, and the pixel threshold is 16px rather than 3 (at 3 a tracker escaped it by declaring `width="4"`).
-
-The one thing the flag deliberately does **not** decide is reachability: a retail email that is one hero image sized by a stripped `style="width:600px"` has no declared size to vouch for, so when there is no text part either, the frame is rendered anyway — an empty-ish frame keeping the "images blocked" notice and its toggle beats the italic "no body" line with no affordance at all. All three threads below come from one seeder.
+The three threads below come from one seeder: a spacer-plus-pixel body beside a readable text part, an image-only hero beside a "view in browser" stub, and a body with nothing to show at all.
 
 ```bash
 node --env-file=.env node_modules/.bin/tsx src/lib/server/db/seed-g02-pixel.mts
@@ -296,15 +294,15 @@ done
 ```output
 seeded pixel thread
 == g02-pixel+pixel
-   iframes mounted: 0
+   iframes mounted: 1
    pre blocks: 1
-   Load images buttons: 0
+   Load images buttons: 1
    what the reader sees: Your code is 480912.
 == g02-pixel+hero
    iframes mounted: 1
-   pre blocks: 0
+   pre blocks: 1
    Load images buttons: 1
-   what the reader sees: Load images
+   what the reader sees: View this email in your browser
 == g02-pixel+nothing
    iframes mounted: 0
    pre blocks: 0
@@ -316,7 +314,7 @@ seeded pixel thread
 ![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](/private/tmp/claude-501/-Users-bloodintern1-Desktop-Resend-Email-Inbox/04f39db3-4c26-412a-b51d-fdebda8a45cc/scratchpad/g02-fixed.png)
 ```
 
-![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](076fef90-2026-07-28.png)
+![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](b80815ec-2026-07-28.png)
 
 ### Cleanup
 
