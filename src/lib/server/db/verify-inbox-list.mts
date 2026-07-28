@@ -401,6 +401,25 @@ equal(
 	visible('<img src="https://track.example/o.gif" width="-1" height="-1">'),
 	false
 );
+// Hand-written email HTML puts units and decimals in these attributes even though
+// the spec doesn't allow them. Reading those as "no size declared" would make a
+// real hero image lose to a "view in browser" text stub.
+equal(
+	'a px unit on a real size still counts',
+	visible('<img src="https://cdn/h.png" width="600px">'),
+	true
+);
+equal('a decimal size still counts', visible('<img src="https://cdn/h.png" width="600.5">'), true);
+equal(
+	'a px unit on a pixel size is still a pixel',
+	visible('<img src="https://t/o.gif" width="1px" height="1px">'),
+	false
+);
+equal(
+	'a non-numeric size is not evidence either way',
+	visible('<img src="https://t/o.gif" width="abc">'),
+	false
+);
 equal(
 	'a small number inside the parked URL cannot demote a real image',
 	visible('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2" width="600" height="200">'),

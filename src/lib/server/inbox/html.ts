@@ -52,15 +52,23 @@ export interface PreparedEmailHtml {
  */
 const TRACKING_PIXEL_MAX_PX = 3;
 
-/** A declared dimension, split by unit; both `null` when it isn't a number. */
+/**
+ * A declared dimension, split by unit; both `null` when it isn't a number.
+ *
+ * Tolerant of the shapes hand-written email HTML actually contains — `600px` and
+ * `600.5` are invalid in a `width` attribute and browsers ignore the unit, but
+ * senders write them, and reading them as "no size declared" would make a real
+ * hero image lose to a "view in browser" text stub.
+ */
 function declaredSize(
 	image: Element,
 	name: 'width' | 'height'
 ): { px: number | null; pct: number | null } {
 	const raw = image.getAttribute(name)?.trim() ?? '';
-	if (/^\d+$/.test(raw)) return { px: Number(raw), pct: null };
-	const percent = /^(\d+)%$/.exec(raw);
-	return { px: null, pct: percent ? Number(percent[1]) : null };
+	const percent = /^(\d+(?:\.\d+)?)\s*%$/.exec(raw);
+	if (percent) return { px: null, pct: Number(percent[1]) };
+	const pixels = /^(\d+(?:\.\d+)?)\s*(?:px)?$/i.exec(raw);
+	return { px: pixels ? Number(pixels[1]) : null, pct: null };
 }
 
 /**
