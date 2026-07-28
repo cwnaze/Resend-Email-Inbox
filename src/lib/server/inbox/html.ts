@@ -32,16 +32,18 @@ export interface PreparedEmailHtml {
 	/** How many images were blocked — 0 means the toggle isn't worth showing. */
 	blockedImageCount: number;
 	/**
-	 * Whether any image here is something the reader is meant to look at, as
-	 * opposed to a tracking pixel or a spacer.
+	 * Whether this HTML shows the reader anything: real text, or an image that is
+	 * demonstrably not a tracking pixel.
 	 *
-	 * Decided here rather than by re-scanning the serialized markup downstream
-	 * because *here* the width/height are attributes on an element. A regex over
-	 * the finished string sees the whole `<img …>` tag — including the sender's URL
-	 * parked on `data-dt-blocked-src` — so a CDN link like `hero.png?height=2`
-	 * read as a 2px image and a retail email lost its only content.
+	 * Decided **here, from the DOM**, and that is the whole point. Every previous
+	 * attempt to answer this by pattern-matching the finished markup was defeated
+	 * by the sender: a regex over an `<img …>` tag also reads the URL parked on
+	 * `data-dt-blocked-src` (so `hero.png?height=2` looked like a 2px image), and a
+	 * de-tagging regex stops at the first `>` (so a `>` inside a query string leaked
+	 * `2">` and counted as "visible text"). Attributes are attributes here, and
+	 * `textContent` is text.
 	 */
-	hasRenderableImage: boolean;
+	hasVisibleContent: boolean;
 }
 
 /**
@@ -50,20 +52,37 @@ export interface PreparedEmailHtml {
  */
 const TRACKING_PIXEL_MAX_PX = 3;
 
-/** A declared dimension in px, or `null` when it isn't a plain number (`100%`). */
-function declaredPixels(image: Element, name: 'width' | 'height'): number | null {
-	const raw = image.getAttribute(name)?.trim();
-	return raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : null;
+/** A declared dimension, split by unit; both `null` when it isn't a number. */
+function declaredSize(
+	image: Element,
+	name: 'width' | 'height'
+): { px: number | null; pct: number | null } {
+	const raw = image.getAttribute(name)?.trim() ?? '';
+	if (/^\d+$/.test(raw)) return { px: Number(raw), pct: null };
+	const percent = /^(\d+)%$/.exec(raw);
+	return { px: null, pct: percent ? Number(percent[1]) : null };
 }
 
-function isRenderableImage(image: Element): boolean {
-	const width = declaredPixels(image, 'width');
-	const height = declaredPixels(image, 'height');
-	// Either axis being pixel-sized is enough: a 600×1 rule is a spacer, and an
-	// undeclared dimension is unknown, which we treat as "could be real".
-	return !(
-		(width !== null && width <= TRACKING_PIXEL_MAX_PX) ||
-		(height !== null && height <= TRACKING_PIXEL_MAX_PX)
+/**
+ * Whether an image is *positively* something to look at.
+ *
+ * "Positively" is the correction for a real bug: treating an unknown size as
+ * "could be real" meant a dimensionless tracking pixel — the common kind, sized
+ * by the CSS this app strips — counted as content and discarded the readable
+ * `text/plain` part of the message. So an image now has to declare a size above
+ * pixel range (in px, or as a percentage, which is how responsive hero images are
+ * sized and which no tracker uses), and must not declare a pixel-range size on
+ * either axis (a 600×1 rule is a spacer).
+ */
+function isDefiniteImage(image: Element): boolean {
+	const width = declaredSize(image, 'width');
+	const height = declaredSize(image, 'height');
+
+	const tiny = [width.px, height.px].some((px) => px !== null && px <= TRACKING_PIXEL_MAX_PX);
+	if (tiny) return false;
+
+	return [width.px, height.px, width.pct, height.pct].some(
+		(value) => value !== null && value > TRACKING_PIXEL_MAX_PX
 	);
 }
 
@@ -127,14 +146,19 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 	}
 
 	let blockedImageCount = 0;
-	let hasRenderableImage = false;
+	let hasDefiniteImage = false;
 	for (const image of container.querySelectorAll('img')) {
-		if (isRenderableImage(image)) hasRenderableImage = true;
-
 		const src = image.getAttribute('src');
-		// A `src` DOMPurify rejected (`javascript:` and friends) is already gone by
-		// now, which is why parking one can never reintroduce a scheme the
-		// sanitizer refused.
+
+		// An image with no `src` at all — including one whose `javascript:` src
+		// DOMPurify just removed — can never render, so it must not make the body
+		// look like it has content. Checking this *before* the size test is the fix
+		// for a body of `<img src="javascript:…" width="600">` mounting an empty
+		// frame while a readable text part was thrown away.
+		if (src !== null && isDefiniteImage(image)) hasDefiniteImage = true;
+
+		// A `src` DOMPurify rejected is already gone by now, which is why parking one
+		// can never reintroduce a scheme the sanitizer refused.
 		if (src === null || isLocalSource(src)) continue;
 
 		image.removeAttribute('src');
@@ -144,5 +168,11 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 
 	const clean = container.innerHTML;
 	if (clean.trim() === '') return null;
-	return { html: clean, blockedImageCount, hasRenderableImage };
+	return {
+		html: clean,
+		blockedImageCount,
+		// `textContent` is the text that will actually render — no attribute values,
+		// no tag fragments, nothing a sender can smuggle past a regex.
+		hasVisibleContent: (container.textContent ?? '').trim() !== '' || hasDefiniteImage
+	};
 }

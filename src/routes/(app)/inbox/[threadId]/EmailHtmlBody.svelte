@@ -53,13 +53,17 @@
 		// srcdoc, and a `ResizeObserver` callback that lands mid-navigation would
 		// otherwise measure the *new*, still-empty document and collapse the message
 		// to the 24px floor until `load` fires.
-		// `about:blank` is the document an iframe has before its `srcdoc` navigation
-		// happens, and it is already `complete` — so the mount-time effect would
-		// otherwise measure an empty body, write the 24px floor, and throw away the
-		// anti-flash guess until `load` fires and corrects it.
-		if (!doc || doc.readyState === 'loading' || doc.URL === 'about:blank') return;
+		if (!doc || doc.readyState === 'loading') return;
 		const body = doc.body;
-		if (!body) return;
+		// An empty body means this is not the srcdoc document yet: an iframe holds a
+		// blank document — already `readyState: 'complete'` — until its `srcdoc`
+		// navigation happens, so the mount-time effect would otherwise measure
+		// nothing, write the 24px floor, and throw away the anti-flash guess until
+		// `load` corrects it. Tested structurally rather than by comparing `doc.URL`
+		// against `'about:blank'`, because which URL a pre-navigation or srcdoc
+		// document reports is engine-dependent (`about:srcdoc` in current engines, the
+		// parent's URL in some older ones) while "has no content" is not.
+		if (!body || body.childNodes.length === 0) return;
 		// The content's height has to come from the **body**, not from
 		// `documentElement.scrollHeight`: the root element's scroll height is floored
 		// at the frame's own viewport height, so it reports back whatever height we

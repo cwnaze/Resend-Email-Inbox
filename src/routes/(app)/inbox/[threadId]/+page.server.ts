@@ -15,13 +15,7 @@ import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { getThreadById, listThreadEmails, markThreadRead } from '$lib/server/db/emails';
-import {
-	absoluteTime,
-	addressListLabel,
-	bodyPlainText,
-	htmlHasVisibleText,
-	senderLabel
-} from '$lib/inbox/format';
+import { absoluteTime, addressListLabel, bodyPlainText, senderLabel } from '$lib/inbox/format';
 import { prepareEmailHtml } from '$lib/server/inbox/html';
 
 export const load: PageServerLoad = async ({ params }) => {
@@ -83,8 +77,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			// message — and if there is no text part either, `html` stays null so
 			// `ThreadMessage` renders its explicit "no body" line instead of an empty
 			// 24px frame with nothing in it and nothing to explain it.
-			const useHtml =
-				prepared !== null && (htmlHasVisibleText(prepared.html) || prepared.hasRenderableImage);
+			const useHtml = prepared !== null && prepared.hasVisibleContent;
 			return {
 				id: message.id,
 				sender: senderLabel(message.fromName, message.fromEmail),

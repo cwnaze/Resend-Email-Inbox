@@ -1,7 +1,7 @@
 # US-G02: Sanitized HTML rendering with image opt-in
 
-*2026-07-28T18:29:57Z by Showboat 0.6.1*
-<!-- showboat-id: 36d130c5-6f95-4a33-be24-907154577a7c -->
+*2026-07-28T18:40:12Z by Showboat 0.6.1*
+<!-- showboat-id: 72f928a1-8ce2-46ae-b01d-48ab46d226f2 -->
 
 **US-G02 — Sanitized HTML rendering with image opt-in.** An HTML email body now renders inside a sandboxed `<iframe srcdoc>` (`sandbox="allow-same-origin"`, never `allow-scripts`) sized to its content height. Every remote `<img src>` is moved aside on the server before the markup crosses the wire, so nothing in a stored body reaches a third party on open; a per-message **Load images** button puts them back for that one message. A message with only `body_text` renders as preformatted, wrapped plain text and mounts no iframe at all.
 
@@ -10,7 +10,7 @@ What this story adds:
 - `src/lib/inbox/srcdoc.ts` — pure (no env/db/DOM/deps), shared by the load, the component and the verification script: `BLOCKED_IMAGE_ATTR`, `restoreBlockedImages`, `buildEmailSrcdoc`.
 - `src/lib/server/inbox/html.ts` — `prepareEmailHtml`, the read-path pass that re-sanitizes a stored body and parks each remote image URL on `data-dt-blocked-src`, returning the blocked count.
 - `src/routes/(app)/inbox/[threadId]/EmailHtmlBody.svelte` — the sandboxed frame, the toggle, content-height measurement, and link-click interception.
-- `htmlHasVisibleText` in `src/lib/inbox/format.ts` (with the image half decided inside `prepareEmailHtml`, where the width/height are element attributes), and `SANITIZE_OPTIONS` exported from `src/lib/server/inbound/sanitize.ts` so the write path and this read path cannot sanitize under different rules.
+- `hasVisibleContent` on `prepareEmailHtml`'s result — the body-choice decision, made in the DOM — and `SANITIZE_OPTIONS` exported from `src/lib/server/inbound/sanitize.ts` so the write path and this read path cannot sanitize under different rules.
 
 Decisions worth keeping:
 
@@ -74,17 +74,22 @@ prepareEmailHtml
   ok   drops remote media src outright
   ok   never parks a javascript: src
   ok   a meta refresh cannot survive to redirect the frame
-body choice: htmlHasVisibleText + prepareEmailHtml.hasRenderableImage
-  ok   text: true for ordinary prose
-  ok   text: false for markup with no text at all
-  ok   text: a style-hidden preheader still counts as visible (style is stripped on write)
-  ok   image: a 1×1 tracking pixel is not renderable
-  ok   image: a hero image is renderable
-  ok   image: no declared dimensions counts as renderable
-  ok   image: a 600×1 spacer rule is not renderable
-  ok   image: a percentage width is not pixel-sized
-  ok   image: a small number inside the parked URL cannot demote a real image
-  ok   image: alt text mentioning width=1 cannot demote a real image
+body choice: prepareEmailHtml.hasVisibleContent
+  ok   prose is visible content
+  ok   markup with nothing in it is not
+  ok   a style-hidden preheader still counts as visible (style is stripped on write)
+  ok   a hero image with px dimensions is visible content
+  ok   a responsive hero image sized in % is visible content
+  ok   a 1x1 tracking pixel is not
+  ok   a 600x1 spacer rule is not
+  ok   a dimensionless tracking pixel is not visible content (CSS-sized trackers are the common kind)
+  ok   an image whose src the sanitizer removed is not visible content
+  ok   a > inside the parked URL cannot masquerade as body text
+  ok   a negative declared dimension is not evidence of a real image
+  ok   a small number inside the parked URL cannot demote a real image
+  ok   alt text mentioning width=1 cannot demote a real image
+  ok   htmlToPlainText does not leak an attribute value containing >
+  ok   htmlToPlainText still reads ordinary prose around such a tag
   ok   the read path drops <template> so its content cannot hide a remote image
   ok   the write path keeps text inside a <template> rather than deleting it
 buildEmailSrcdoc
@@ -102,7 +107,7 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/db/verify-inbox-list.m
 ```
 
 ```output
-142/142 checks passed
+147/147 checks passed
 ```
 
 ## Browser verification
@@ -255,7 +260,15 @@ The third acceptance criterion is about a message with *only* `body_text`, but t
 - HTML that is one hero image (a retail email) **is** the message, and its text part is a "View this email in your browser" stub. Demanding *text* would throw the real message away.
 - And when the HTML shows nothing *and* there is no text part, neither branch applies: the explicit "no body" line has to win, not an empty frame.
 
-So the choice is `htmlHasVisibleText(...) || prepared.hasRenderableImage`. The image half is decided inside `prepareEmailHtml`, from the element's own `width`/`height`, **not** by a regex over the finished markup — that regex also saw the sender's URL parked on `data-dt-blocked-src`, so a CDN link like `hero.png?h=1` read as a 1px image and discarded a retail email's only content. The seeded hero URL carries exactly that parameter. All three threads come from one seeder.
+So the choice is one flag, `prepared.hasVisibleContent`, computed **in the DOM** inside `prepareEmailHtml`: `textContent` for text, and for images a *positive* size declaration (px above pixel range, or a percentage, which is how responsive hero images are sized and which no tracker uses).
+
+Every part of that sentence is a bug fix, because a sender controls both the URL and the attribute text of an `<img>`, and three successive pattern-matching versions were steered by it:
+
+- a regex over the finished `<img …>` tag also read the URL parked on `data-dt-blocked-src`, so `hero.png?height=2` looked like a 2px image and discarded a retail email's only content (the seeded hero URL still carries that parameter);
+- treating an *unknown* size as "could be real" meant a dimensionless tracking pixel — the common kind, sized by the CSS this app strips — counted as content and discarded the readable text part;
+- and the de-tagger's `<[^>]*>` stopped at the first `>`, so a tracker only had to put `>` in a query string to leak `2">` as "visible text" and suppress the text alternative.
+
+An `<img>` whose `src` the sanitizer removed also no longer counts as content. All three threads below come from one seeder.
 
 ```bash
 node --env-file=.env node_modules/.bin/tsx src/lib/server/db/seed-g02-pixel.mts
@@ -296,7 +309,7 @@ seeded pixel thread
 ![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](/private/tmp/claude-501/-Users-bloodintern1-Desktop-Resend-Email-Inbox/04f39db3-4c26-412a-b51d-fdebda8a45cc/scratchpad/g02-fixed.png)
 ```
 
-![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](93a0a1f5-2026-07-28.png)
+![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](3a96bd01-2026-07-28.png)
 
 ### Cleanup
 

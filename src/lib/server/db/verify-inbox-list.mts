@@ -23,7 +23,6 @@ import {
 	addressListLabel,
 	bodyPlainText,
 	bodySnippet,
-	htmlHasVisibleText,
 	htmlToPlainText,
 	relativeTime,
 	senderLabel
@@ -347,59 +346,82 @@ check(
 	prepareEmailHtml('<meta http-equiv="refresh" content="0;url=https://evil.example">') === null
 );
 
-console.log('body choice: htmlHasVisibleText + prepareEmailHtml.hasRenderableImage');
-equal('text: true for ordinary prose', htmlHasVisibleText('<p>Hello</p>'), true);
-equal('text: false for markup with no text at all', htmlHasVisibleText('<div><br></div>'), false);
-// A style-hidden preheader is NOT hidden by the time this runs — the sanitizer
-// strips `style` on the write path — so it counts as visible text. Asserted with
-// real words rather than `&nbsp;` so the check states the true behaviour instead
-// of dodging it; the limitation is documented on `htmlHasVisibleText`.
-equal(
-	'text: a style-hidden preheader still counts as visible (style is stripped on write)',
-	htmlHasVisibleText(prepareEmailHtml('<div style="display:none">preheader junk</div>')!.html),
-	true
-);
+console.log('body choice: prepareEmailHtml.hasVisibleContent');
+// This decision is made in the DOM, inside `prepareEmailHtml`, and every case
+// below is one a previous pattern-matching version got wrong. A sender controls
+// both the URL and the attribute text of an `<img>`, so a regex over the finished
+// markup could be steered into either answer.
+const visible = (html: string) => prepareEmailHtml(html)?.hasVisibleContent ?? null;
 
-// The image half is decided from element attributes inside `prepareEmailHtml`,
-// never by re-scanning the serialized markup: the finished `<img …>` tag also
-// contains the sender's URL on `data-dt-blocked-src`, and a regex over it read
-// `hero.png?height=2` as a 2px image and discarded a retail email's only content.
+equal('prose is visible content', visible('<p>Hello</p>'), true);
+equal('markup with nothing in it is not', visible('<div><br></div>'), false);
 equal(
-	'image: a 1×1 tracking pixel is not renderable',
-	prepareEmailHtml('<img src="https://t/o.gif" width="1" height="1">')!.hasRenderableImage,
+	'a style-hidden preheader still counts as visible (style is stripped on write)',
+	visible('<div style="display:none">preheader junk</div>'),
+	true
+);
+equal(
+	'a hero image with px dimensions is visible content',
+	visible('<img src="https://cdn/h.png" width="600" height="400">'),
+	true
+);
+equal(
+	'a responsive hero image sized in % is visible content',
+	visible('<img src="https://cdn/h.png" width="100%">'),
+	true
+);
+equal(
+	'a 1x1 tracking pixel is not',
+	visible('<img src="https://t/o.gif" width="1" height="1">'),
 	false
 );
 equal(
-	'image: a hero image is renderable',
-	prepareEmailHtml('<img src="https://cdn/hero.png" width="600" height="400">')!.hasRenderableImage,
-	true
+	'a 600x1 spacer rule is not',
+	visible('<img src="https://cdn/r.png" width="600" height="1">'),
+	false
 );
+// The four inputs that previously suppressed a readable text part:
 equal(
-	'image: no declared dimensions counts as renderable',
-	prepareEmailHtml('<img src="https://cdn/hero.png">')!.hasRenderableImage,
-	true
-);
-equal(
-	'image: a 600×1 spacer rule is not renderable',
-	prepareEmailHtml('<img src="https://cdn/rule.png" width="600" height="1">')!.hasRenderableImage,
+	'a dimensionless tracking pixel is not visible content (CSS-sized trackers are the common kind)',
+	visible('<img src="https://track.example/o.gif?id=1" alt="">'),
 	false
 );
 equal(
-	'image: a percentage width is not pixel-sized',
-	prepareEmailHtml('<img src="https://cdn/hero.png" width="100%">')!.hasRenderableImage,
+	'an image whose src the sanitizer removed is not visible content',
+	visible('<p><img src="javascript:alert(1)" width="600"></p>'),
+	false
+);
+equal(
+	'a > inside the parked URL cannot masquerade as body text',
+	visible('<img src="https://track.example/o.gif?d=1>2" width="1" height="1">'),
+	false
+);
+equal(
+	'a negative declared dimension is not evidence of a real image',
+	visible('<img src="https://track.example/o.gif" width="-1" height="-1">'),
+	false
+);
+equal(
+	'a small number inside the parked URL cannot demote a real image',
+	visible('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2" width="600" height="200">'),
 	true
 );
 equal(
-	'image: a small number inside the parked URL cannot demote a real image',
-	prepareEmailHtml('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2">')!
-		.hasRenderableImage,
+	'alt text mentioning width=1 cannot demote a real image',
+	visible('<img src="https://cdn/hero.png" width="600" height="400" alt="chart width=1 height=1">'),
 	true
 );
+// The de-tagger backs the *text* fallback, so it must not leak tag fragments
+// either: a `>` inside an attribute value used to end the tag early.
 equal(
-	'image: alt text mentioning width=1 cannot demote a real image',
-	prepareEmailHtml('<img src="https://cdn/hero.png" alt="chart width=1 height=1">')!
-		.hasRenderableImage,
-	true
+	'htmlToPlainText does not leak an attribute value containing >',
+	htmlToPlainText('<img src="https://x/a.gif?d=1>2" width="1">'),
+	''
+);
+equal(
+	'htmlToPlainText still reads ordinary prose around such a tag',
+	htmlToPlainText('<p>before</p><img src="x?d=1>2"><p>after</p>'),
+	'before\n\nafter'
 );
 
 check(

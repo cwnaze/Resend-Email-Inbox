@@ -23,6 +23,16 @@ function decodeBasicEntities(text: string): string {
 		.replace(/&amp;/gi, '&');
 }
 
+/**
+ * Matches one tag, skipping over quoted attribute values.
+ *
+ * A plain `<[^>]*>` ends the tag at the first `>` — including one inside an
+ * attribute, which a sender controls (`<img src="x?d=1>2">`). That left `2">` behind
+ * as apparent body text. Only ever used for de-tagging into *text*; this is not a
+ * parser and not a sanitizer.
+ */
+const HTML_TAG = /<[^\s>]+(?:[^>"']|"[^"]*"|'[^']*')*>/g;
+
 /** Removes tags whose *content* is not prose, along with the content itself. */
 function dropNonProseElements(html: string): string {
 	// `sanitizeEmailHtml` already forbids these, but a body stored before that
@@ -44,7 +54,7 @@ function stripHtml(html: string): string {
 		dropNonProseElements(html)
 			.replace(/<br\s*\/?>/gi, ' ')
 			.replace(/<\/(p|div|tr|li|h[1-6])>/gi, ' ')
-			.replace(/<[^>]*>/g, '')
+			.replace(HTML_TAG, '')
 	);
 }
 
@@ -124,7 +134,7 @@ export function htmlToPlainText(html: string): string {
 	const detagged = dropNonProseElements(html)
 		.replace(/<br\s*\/?>/gi, '\n')
 		.replace(/<\/(p|div|tr|li|h[1-6]|blockquote|table|section|article)\s*>/gi, '\n\n')
-		.replace(/<[^>]*>/g, '');
+		.replace(HTML_TAG, '');
 
 	return (
 		decodeBasicEntities(detagged)
@@ -138,27 +148,6 @@ export function htmlToPlainText(html: string): string {
 			.replace(/\n{3,}/g, '\n\n')
 			.trim()
 	);
-}
-
-/**
- * Whether an HTML body contains readable text (US-G02).
- *
- * One half of the thread load's choice between a message's HTML and text parts;
- * the other half is `prepareEmailHtml`'s `hasRenderableImage`, which lives there
- * because deciding whether an image is a tracking pixel needs the element's
- * attributes rather than a regex over finished markup.
- *
- * Known limitation, worth stating because the obvious counterexample looks like a
- * bug: a "hidden" preheader (`<div style="display:none">`) is *not* hidden by the
- * time this sees it, because the sanitizer strips `style` on the write path. Such
- * a preheader therefore counts as visible text — which is honest (with no style
- * attribute the browser does render it) but means an HTML part consisting of only
- * a preheader and a pixel still wins over a text alternative. Recovering that
- * would need the write path to drop style-hidden elements before dropping the
- * attribute, which is a rendering-fidelity change beyond this story.
- */
-export function htmlHasVisibleText(html: string): boolean {
-	return htmlToPlainText(html).trim() !== '';
 }
 
 /**
