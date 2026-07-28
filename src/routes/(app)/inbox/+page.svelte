@@ -4,9 +4,17 @@
 	 *
 	 * Renders full-width in the shell's main pane: the shell has no list
 	 * column of its own (US-F01 removed the placeholder one — see
-	 * `(app)/+layout.svelte`). US-G01 introduces the thread detail view and
-	 * with it an `inbox/+layout.svelte` holding the list/detail split, at
-	 * which point this list moves into that layout's fixed-width column.
+	 * `(app)/+layout.svelte`).
+	 *
+	 * US-F01/F02 expected US-G01 to move this list into an
+	 * `inbox/+layout.svelte` beside the thread view. US-G01 built the thread
+	 * view full-width instead and **deferred the split**: a layout load runs in
+	 * parallel with the page load it wraps, so a list living in the layout would
+	 * render from a snapshot taken before the thread page's `markThreadRead`
+	 * (US-F02) committed — the row you just opened would keep its unread dot
+	 * until some later navigation. Making the split correct means resolving that
+	 * ordering first (a form action, or an explicit invalidation), which belongs
+	 * with US-G04's mark-read-on-view criterion rather than here.
 	 *
 	 * Read/unread styling (US-F02), the read filter (US-F03) and search
 	 * (US-F04) all layer onto this list rather than replacing it.
@@ -44,9 +52,9 @@
 </script>
 
 <!--
-	Capped and centered only while the list has the full pane to itself; US-G01
-	moves it into a fixed-width column beside the thread view, where the cap
-	stops applying.
+	Capped and centered while the list has the full pane to itself. The cap stops
+	applying if the deferred list/detail split (see above) ever moves this into a
+	fixed-width column.
 -->
 <section class="mx-auto flex min-h-full w-full max-w-3xl flex-col">
 	<h1 class="sr-only">Inbox</h1>

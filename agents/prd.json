@@ -346,8 +346,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 23,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Thread view built full-width. HTML bodies render as de-tagged plain text pending US-G02's sandboxed iframe. The inbox list/detail split that US-F01/F02's notes anticipated here was deliberately deferred: a layout load runs in parallel with its page's load, so a list in inbox/+layout.svelte would render before markThreadRead commits - revisit with US-G04."
     },
     {
       "id": "US-G02",

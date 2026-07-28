@@ -16,9 +16,17 @@ import { eq, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { emails, threads } from './schema.js';
 import type { Database } from './types.js';
-import { getThreadById, markThreadRead } from './emails.js';
+import { getThreadById, listThreadEmails, markThreadRead } from './emails.js';
 import { inboxSearchLikePattern, listInboxThreads } from './inbox.js';
-import { bodySnippet, relativeTime, senderLabel } from '../../inbox/format.js';
+import {
+	absoluteTime,
+	addressListLabel,
+	bodyPlainText,
+	bodySnippet,
+	htmlToPlainText,
+	relativeTime,
+	senderLabel
+} from '../../inbox/format.js';
 import { inboxFilterSearch, parseInboxFilter } from '../../inbox/filter.js';
 import { inboxSearchSearch, parseInboxQuery } from '../../inbox/search.js';
 
@@ -113,6 +121,85 @@ equal(
 	relativeTime(new Date('2026-07-27T12:05:00.000Z'), now),
 	'now'
 );
+
+// ---------------------------------------------------------------------------
+// Pure: the thread view's formatters (US-G01)
+// ---------------------------------------------------------------------------
+
+console.log('htmlToPlainText / bodyPlainText');
+equal(
+	'keeps a blank line between block elements',
+	htmlToPlainText('<p>one</p><p>two</p>'),
+	'one\n\ntwo'
+);
+equal('turns a <br> into a single newline', htmlToPlainText('a<br>b'), 'a\nb');
+equal(
+	'collapses indentation without collapsing the line structure',
+	htmlToPlainText('<p>\n\t\tone   word\n</p>\n<p>  two  </p>'),
+	'one word\n\ntwo'
+);
+equal(
+	'caps a run of empty blocks at one blank line',
+	htmlToPlainText('<p>one</p><div></div><div></div><p>two</p>'),
+	'one\n\ntwo'
+);
+equal('drops style/script content', htmlToPlainText('<style>p{color:red}</style><p>B</p>'), 'B');
+equal(
+	'decodes entities, and does not double-decode an escaped one',
+	htmlToPlainText('<p>Tom &amp; Jerry, &amp;lt;not a tag&amp;gt;</p>'),
+	'Tom & Jerry, &lt;not a tag&gt;'
+);
+equal('empty markup yields an empty string', htmlToPlainText('<div></div>'), '');
+equal(
+	'bodyPlainText prefers the text body and keeps its line breaks',
+	bodyPlainText('line one\nline two\n\n', '<p>ignored</p>'),
+	'line one\nline two'
+);
+equal(
+	'bodyPlainText falls back to de-tagged HTML',
+	bodyPlainText(null, '<p>from html</p>'),
+	'from html'
+);
+equal(
+	'bodyPlainText treats a whitespace-only text body as absent',
+	bodyPlainText(' \n ', null),
+	''
+);
+equal('bodyPlainText with no body at all is empty', bodyPlainText(null, null), '');
+equal(
+	'bodyPlainText normalizes CRLF in a text body',
+	bodyPlainText('a\r\nb', null),
+	// A stray \r would render as a control character in the reading view.
+	'a\nb'
+);
+
+console.log('addressListLabel');
+equal(
+	'joins addresses with commas',
+	addressListLabel(['a@example.com', 'b@example.com']),
+	'a@example.com, b@example.com'
+);
+equal('a null list renders no line', addressListLabel(null), '');
+equal('an empty list renders no line', addressListLabel([]), '');
+equal('a list of blanks renders no line', addressListLabel(['', '  ']), '');
+equal(
+	'blank entries are dropped, not joined as gaps',
+	addressListLabel(['a@x.com', ' ']),
+	'a@x.com'
+);
+
+console.log('absoluteTime');
+// Asserted as a shape rather than an exact string: the output is rendered in
+// the running machine's timezone, so pinning "3:15 PM" would only pass in one.
+// `\s` rather than a literal space: current ICU separates the clock time from
+// the AM/PM marker with a narrow no-break space (U+202F).
+const stampedTime = absoluteTime(new Date('2026-07-25T15:15:00.000Z'));
+check(
+	'renders month, day, year and a 12-hour clock time',
+	/^[A-Z][a-z]{2} \d{1,2}, 2026, \d{1,2}:\d{2}\s?(AM|PM)$/.test(stampedTime),
+	stampedTime
+);
+check('includes the year, unlike the list’s relative label', stampedTime.includes('2026'));
 
 // ---------------------------------------------------------------------------
 // Pure: the read/unread filter (US-F03)
@@ -280,7 +367,8 @@ try {
 				direction: 'inbound' as const,
 				fromEmail: 'second@example.com',
 				fromName: 'Second Sender',
-				toEmails: ['owner@example.com'],
+				toEmails: ['owner@example.com', 'other@example.com'],
+				ccEmails: ['cc-one@example.com', 'cc-two@example.com'],
 				subject: 'Second in thread',
 				bodyText: 'Second body',
 				receivedAt: at(15)
@@ -401,6 +489,53 @@ try {
 		`${stamp} multi`,
 		`${stamp} older`
 	]);
+
+	// -------------------------------------------------------------------------
+	// listThreadEmails (US-G01)
+	// -------------------------------------------------------------------------
+
+	console.log('listThreadEmails — live DB');
+
+	const threadEmails = await listThreadEmails(db, multi.id);
+	equal(
+		'returns every visible message oldest first, excluding the soft-deleted one',
+		threadEmails.map((row) => row.subject),
+		['First in thread', 'Second in thread']
+	);
+	check(
+		'is the ascending mirror of the list’s newest-first preview pick',
+		threadEmails[0].receivedAt.getTime() < threadEmails[1].receivedAt.getTime()
+	);
+	equal(
+		'carries the recipients the thread view renders',
+		addressListLabel(threadEmails[1].toEmails),
+		'owner@example.com, other@example.com'
+	);
+	equal(
+		'carries the cc list',
+		addressListLabel(threadEmails[1].ccEmails),
+		'cc-one@example.com, cc-two@example.com'
+	);
+	equal(
+		'renders no cc line for an email without one',
+		addressListLabel(threadEmails[0].ccEmails),
+		''
+	);
+	equal(
+		'a single-email thread returns just that email',
+		(await listThreadEmails(db, newer.id)).map((row) => row.subject),
+		['Newer subject']
+	);
+	equal(
+		'a thread whose only email is soft-deleted has no visible message (the load 404s on this)',
+		await listThreadEmails(db, deletedOnly.id),
+		[]
+	);
+	equal(
+		'an unknown thread id yields no messages',
+		await listThreadEmails(db, `${stamp}-missing`),
+		[]
+	);
 
 	// -------------------------------------------------------------------------
 	// markThreadRead (US-F02)
