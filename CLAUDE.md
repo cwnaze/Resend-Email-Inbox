@@ -85,6 +85,16 @@
 - `svelte/no-unused-props` is on, so don't declare a prop now for a later story to style — use it or leave it out.
 - `src/routes/(app)/inbox/[threadId]/+page.svelte` is a **placeholder** so the list rows have a real destination (FR-4); US-G01 replaces it wholesale. Its `+page.server.ts` is real as of US-F02 (404 on an unknown thread id, then `markThreadRead`).
 
+### Read/unread filter (US-F03)
+
+- `src/lib/inbox/filter.ts` is the single definition of the filter: `INBOX_FILTERS` (`all | unread | read`), `INBOX_FILTER_PARAM`, `parseInboxFilter` and `inboxFilterSearch`. Pure, like `format.ts`. `parseInboxFilter` **falls back to `all`** for anything unrecognised rather than erroring — the filter is a view preference, and a 400 on a hand-edited or stale query string would turn a bookmark into a broken inbox.
+- `inboxFilterSearch` builds the link's query string from the **current** `URLSearchParams`, so US-F04's `?q=` survives a filter change (FR-3 requires both to be representable at once). `all` deletes the param instead of writing `?filter=all`. Any future list-state param should go through this function rather than rebuilding the query string.
+- The narrowing happens in `listInboxThreads` (`filter` option → a `where` on `threads.isRead`), i.e. server-side per FR-2's spirit — never by hiding rows the client already received. It filters the **thread-level** flag ("every message in the thread is read"), not the previewed email's, so it agrees with the unread dot by construction.
+- `src/lib/server/db/inbox.ts` imports the filter type by **relative** path, not `$lib/...`: `verify-inbox-list.mts` loads that module under plain `tsx`, which has no Vite alias resolution. Same constraint applies to anything else `inbox.ts` starts importing.
+- `svelte/no-navigation-without-resolve` inspects the `href` **attribute expression**, so `FilterTabs.svelte` writes `href="{resolve('/(app)/inbox')}{link.search}"` inline; precomputing a full href in a `$derived` and passing it down fails lint. Derive only the query string.
+- The filter tabs use `aria-current="true"`, not `"page"` — all three links address the same page. The empty state's copy is per-filter, since "New mail will show up here" is wrong when the mail exists and is merely filtered out.
+- `src/lib/server/db/seed-f03-demo.mts` seeds a read thread, an unread thread and a `123456` login code for browser demos and removes them with `--cleanup`; it deletes its own rows before inserting so it is re-runnable (`message_id` is unique). Reuse it for US-F04/G01 browser verification rather than seeding by hand.
+
 ### Unread treatment (US-F02)
 
 - `markThreadRead` in `src/lib/server/db/emails.ts` is the only place read state is cleared: it marks every email in the thread read, then **recomputes** `threads.is_read` with a `not exists` over the thread's non-deleted unread emails, both inside one transaction. Never replace that recompute with a blind `set({ isRead: true })` — an inbound message can land between the two statements (`touchThreadForNewMessage` sets the thread unread) and the blind write would hide a message the owner never saw. Soft-deleted emails are marked read but don't count toward the thread flag, otherwise a deleted-but-unread email pins the thread unread with nothing visible on screen to explain it.

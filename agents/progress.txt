@@ -336,3 +336,14 @@
   - `rounded-full` does not make a circle in this app (the whole radius namespace is capped at 2-4px); a real dot needs `rounded-[50%]`.
   - Browser-verifying read-state transitions works with the US-F01 recipe: seed an `auth_codes` row, `fetch('/api/auth/verify-code')` from the page, then assert on DOM classes (`span.bg-accent`) before and after clicking a row. A client-side `rodney back` does re-run the server load, so the cleared dot is observable without a hard reload.
 ---
+
+## [2026-07-28] - US-F03
+- Implemented the read/unread filter: an All / Unread / Read link control above the inbox list, with the active filter carried in `?filter=` and applied server-side in `listInboxThreads` via a `where` on `threads.is_read`. Unknown values fall back to All, and the empty state's copy changes per filter.
+- Files changed: `src/lib/inbox/filter.ts` (new), `src/lib/server/db/inbox.ts` (`filter` option), `src/routes/(app)/inbox/+page.server.ts`, `src/routes/(app)/inbox/+page.svelte`, `src/routes/(app)/inbox/FilterTabs.svelte` (new), `src/lib/server/db/verify-inbox-list.mts` (+13 checks, 53/53), `src/lib/server/db/seed-f03-demo.mts` (new demo seeder), `CLAUDE.md`, `docs/demos/US-F03.md`, `agents/prd.json`, `agents/progress.txt`.
+- **Learnings for future iterations:**
+  - `svelte/no-navigation-without-resolve` looks at the `href` attribute expression itself. Building a complete href in a `$derived` and passing it to `href={link.href}` fails lint even though `resolve()` produced it; the fix is `href="{resolve('/(app)/inbox')}{link.search}"` with only the query string derived.
+  - Anything `src/lib/server/db/inbox.ts` imports must use a relative path — `verify-inbox-list.mts` runs it under bare `tsx`, where `$lib` doesn't resolve.
+  - Build filter/search links off the live `URLSearchParams` rather than from scratch (FR-3), and drop the param for the default value so the default view's URL stays clean.
+  - `rodney url` can lag a client-side navigation; `rodney js location.search` is the reliable read. `rodney waitstable` after a click is worth it before asserting on the new DOM.
+  - Seeded demo rows with fixed 2019/2020 timestamps sort to the bottom of the inbox and render absolute dates, which keeps `showboat verify` output stable — real rows show relative times that change between runs, so filter assertions to the seeded rows.
+---

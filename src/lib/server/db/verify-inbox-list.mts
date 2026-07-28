@@ -19,6 +19,7 @@ import type { Database } from './types.js';
 import { getThreadById, markThreadRead } from './emails.js';
 import { listInboxThreads } from './inbox.js';
 import { bodySnippet, relativeTime, senderLabel } from '../../inbox/format.js';
+import { inboxFilterSearch, parseInboxFilter } from '../../inbox/filter.js';
 
 let failures = 0;
 let checks = 0;
@@ -110,6 +111,40 @@ equal(
 	'a future timestamp (clock skew) reads as now, never a negative duration',
 	relativeTime(new Date('2026-07-27T12:05:00.000Z'), now),
 	'now'
+);
+
+// ---------------------------------------------------------------------------
+// Pure: the read/unread filter (US-F03)
+// ---------------------------------------------------------------------------
+
+console.log('parseInboxFilter');
+equal('accepts all', parseInboxFilter('all'), 'all');
+equal('accepts unread', parseInboxFilter('unread'), 'unread');
+equal('accepts read', parseInboxFilter('read'), 'read');
+equal('defaults a missing param to all', parseInboxFilter(null), 'all');
+equal('defaults an unknown value to all rather than erroring', parseInboxFilter('UNREAD'), 'all');
+equal('defaults an empty value to all', parseInboxFilter(''), 'all');
+
+console.log('inboxFilterSearch');
+equal(
+	'sets the param for a non-default filter',
+	inboxFilterSearch(new URLSearchParams(), 'unread'),
+	'?filter=unread'
+);
+equal(
+	'drops the param for the default filter',
+	inboxFilterSearch(new URLSearchParams('filter=unread'), 'all'),
+	''
+);
+equal(
+	'preserves other params when switching filter (FR-3)',
+	inboxFilterSearch(new URLSearchParams('q=invoice&filter=read'), 'unread'),
+	'?q=invoice&filter=unread'
+);
+equal(
+	'preserves other params when clearing the filter',
+	inboxFilterSearch(new URLSearchParams('filter=read&q=invoice'), 'all'),
+	'?q=invoice'
 );
 
 // ---------------------------------------------------------------------------
@@ -269,6 +304,31 @@ try {
 
 	const limited = await listInboxThreads(db, { limit: 1 });
 	check('honors the limit', limited.length === 1, limited.length);
+
+	// -------------------------------------------------------------------------
+	// The read/unread filter (US-F03)
+	// -------------------------------------------------------------------------
+
+	console.log('listInboxThreads — filter (US-F03)');
+
+	const mine = (rows: Awaited<ReturnType<typeof listInboxThreads>>) =>
+		rows.filter((row) => threadIds.includes(row.threadId)).map((row) => row.threadSubject);
+
+	equal(
+		'filter=unread hides threads where is_read is true',
+		mine(await listInboxThreads(db, { limit: 200, filter: 'unread' })),
+		[`${stamp} newer`, `${stamp} multi`]
+	);
+	equal(
+		'filter=read hides unread threads, and still excludes the soft-deleted-only one',
+		mine(await listInboxThreads(db, { limit: 200, filter: 'read' })),
+		[`${stamp} older`]
+	);
+	equal(
+		'filter=all matches the unfiltered default',
+		mine(await listInboxThreads(db, { limit: 200, filter: 'all' })),
+		mine(rows)
+	);
 
 	// -------------------------------------------------------------------------
 	// markThreadRead (US-F02)
