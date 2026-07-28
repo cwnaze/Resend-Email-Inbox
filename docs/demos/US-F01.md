@@ -21,10 +21,10 @@ git diff --stat main...HEAD -- src/
  src/lib/server/db/verify-inbox-list.mts        | 282 +++++++++++++++++++++++++
  src/routes/(app)/+layout.svelte                |  23 +-
  src/routes/(app)/inbox/+page.server.ts         |  28 +++
- src/routes/(app)/inbox/+page.svelte            |  44 +++-
+ src/routes/(app)/inbox/+page.svelte            |  45 +++-
  src/routes/(app)/inbox/ThreadRow.svelte        |  70 ++++++
  src/routes/(app)/inbox/[threadId]/+page.svelte |  20 ++
- 8 files changed, 625 insertions(+), 19 deletions(-)
+ 8 files changed, 626 insertions(+), 19 deletions(-)
 ```
 
 The one-query shape — the correlated subquery that both picks the preview email and excludes all-soft-deleted threads:
