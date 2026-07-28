@@ -12,10 +12,11 @@
 // enforces the FKs.
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { emails, threads } from './schema.js';
 import type { Database } from './types.js';
+import { getThreadById, markThreadRead } from './emails.js';
 import { listInboxThreads } from './inbox.js';
 import { bodySnippet, relativeTime, senderLabel } from '../../inbox/format.js';
 
@@ -268,6 +269,82 @@ try {
 
 	const limited = await listInboxThreads(db, { limit: 1 });
 	check('honors the limit', limited.length === 1, limited.length);
+
+	// -------------------------------------------------------------------------
+	// markThreadRead (US-F02)
+	// -------------------------------------------------------------------------
+
+	console.log('markThreadRead — live DB');
+
+	await markThreadRead(db, multi.id);
+
+	const multiEmails = await db.select().from(emails).where(eq(emails.threadId, multi.id));
+	check(
+		'marks every email in the thread read, soft-deleted ones included',
+		multiEmails.length === 3 && multiEmails.every((row) => row.isRead),
+		multiEmails.map((row) => [row.subject, row.isRead])
+	);
+	equal('recomputes the thread flag to read', (await getThreadById(db, multi.id))!.isRead, true);
+
+	// An unread email that is soft-deleted must not pin the thread unread: it is
+	// not a visible message, so there'd be nothing on screen to explain the dot.
+	const [hiddenUnread] = await db
+		.insert(emails)
+		.values([
+			{
+				threadId: multi.id,
+				messageId: `<${stamp}-multi-4@invalid>`,
+				direction: 'inbound' as const,
+				fromEmail: 'fourth@example.com',
+				toEmails: ['owner@example.com'],
+				subject: 'Deleted and unread',
+				isDeleted: true,
+				isRead: false,
+				receivedAt: at(19)
+			}
+		])
+		.returning();
+	emailIds.push(hiddenUnread.id);
+	await markThreadRead(db, multi.id);
+	equal(
+		'a soft-deleted unread email does not keep the thread unread',
+		(await getThreadById(db, multi.id))!.isRead,
+		true
+	);
+
+	// The recompute is what protects against a message arriving mid-open.
+	const [arrived] = await db
+		.insert(emails)
+		.values([
+			{
+				threadId: older.id,
+				messageId: `<${stamp}-older-2@invalid>`,
+				direction: 'inbound' as const,
+				fromEmail: 'later@example.com',
+				toEmails: ['owner@example.com'],
+				subject: 'Arrived later',
+				isRead: false,
+				receivedAt: at(30)
+			}
+		])
+		.returning();
+	emailIds.push(arrived.id);
+	await db.update(threads).set({ isRead: false }).where(eq(threads.id, older.id));
+	await markThreadRead(db, older.id);
+	equal(
+		'marking read clears a thread whose newly arrived message is now read too',
+		(await getThreadById(db, older.id))!.isRead,
+		true
+	);
+
+	// Unknown thread id: a no-op, not a throw (a deleted thread must not 500).
+	await markThreadRead(db, `${stamp}-missing`);
+	check('is a no-op for an unknown thread id', true);
+	equal(
+		'getThreadById misses on an unknown id',
+		await getThreadById(db, `${stamp}-missing`),
+		undefined
+	);
 } finally {
 	if (emailIds.length > 0) {
 		await db.delete(emails).where(inArray(emails.id, emailIds));

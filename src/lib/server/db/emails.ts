@@ -35,6 +35,11 @@ export async function getEmailByMessageId(
 	return row;
 }
 
+export async function getThreadById(db: Database, threadId: string): Promise<Thread | undefined> {
+	const [row] = await db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
+	return row;
+}
+
 export type InsertInboundEmailResult = {
 	email: Email;
 	/** False when this exact `message_id` was already stored (a redelivery). */
@@ -159,6 +164,46 @@ export async function touchThreadForNewMessage(
 			lastMessageAt: sql`max(${threads.lastMessageAt}, ${messageAt.getTime()})`
 		})
 		.where(eq(threads.id, threadId));
+}
+
+/**
+ * Marks every email in a thread read and recomputes `threads.is_read`
+ * (US-F02): opening a thread is what makes it read.
+ *
+ * Two properties worth keeping:
+ *
+ * - The thread flag is **recomputed** from the emails rather than assumed to be
+ *   true. `threads.is_read` means "every message in the thread is read" (Data
+ *   Model PRD), and an inbound message can land between the two statements —
+ *   `touchThreadForNewMessage` would set the thread unread, and a blind
+ *   `set({ isRead: true })` here would then hide a message the owner never saw.
+ *   The `not exists` sees that row and leaves the thread unread.
+ * - Soft-deleted emails are marked read too (they are messages of the thread),
+ *   but only non-deleted ones count toward the thread flag — otherwise a
+ *   deleted-but-unread email would pin the thread unread forever with no
+ *   visible message explaining why. That matches `listInboxThreads`, where a
+ *   soft-deleted email is not a visible message either.
+ *
+ * Both statements run in one transaction so a failure of the recompute can't
+ * leave read emails under an unread thread (or the reverse).
+ */
+export async function markThreadRead(db: Database, threadId: string): Promise<void> {
+	await db.transaction(async (tx) => {
+		await tx
+			.update(emails)
+			.set({ isRead: true })
+			.where(and(eq(emails.threadId, threadId), eq(emails.isRead, false)));
+
+		await tx
+			.update(threads)
+			.set({
+				isRead: sql`not exists (
+					select 1 from ${emails} ue
+					where ue.thread_id = ${threadId} and ue.is_read = 0 and ue.is_deleted = 0
+				)`
+			})
+			.where(eq(threads.id, threadId));
+	});
 }
 
 /**
