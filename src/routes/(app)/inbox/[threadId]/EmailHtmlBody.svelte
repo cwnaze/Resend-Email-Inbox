@@ -72,9 +72,19 @@
 		const href = link?.getAttribute('href');
 		if (!href) return;
 
+		// Cancel regardless of what the href turns out to be: the `<base>` already
+		// means the frame can't navigate itself, and cancelling keeps that true even
+		// for the hrefs this handler declines to open.
 		event.preventDefault();
-		// Resolved against this document, but the sanitizer has already restricted
-		// the scheme (no `javascript:`), so this can only be a real navigation.
+
+		// Only an absolute http(s) URL is worth a new tab. A relative path or a bare
+		// `#anchor` — both of which survive sanitization, and a newsletter
+		// "back to top" link is exactly the latter — would resolve against *this*
+		// app's origin and open a pointless tab showing our own inbox. A stored
+		// email body has no meaningful base URL of its own, so there is nothing
+		// sensible to resolve them against.
+		if (!/^https?:\/\//i.test(href.trim())) return;
+
 		// `noopener` because the opened page is not sandboxed and must not get a
 		// handle back to this window.
 		window.open(href, '_blank', 'noopener,noreferrer');
