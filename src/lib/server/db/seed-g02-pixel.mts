@@ -33,6 +33,16 @@ if (!process.argv.includes('--cleanup')) {
 		.insert(threads)
 		.values([{ subject: `${STAMP} pixel only`, lastMessageAt: at, isRead: false }])
 		.returning();
+	const [hero] = await db
+		.insert(threads)
+		.values([
+			{
+				subject: `${STAMP} hero image only`,
+				lastMessageAt: new Date(at.getTime() + 1000),
+				isRead: false
+			}
+		])
+		.returning();
 	await db.insert(emails).values([
 		{
 			threadId: thread.id,
@@ -46,6 +56,22 @@ if (!process.argv.includes('--cleanup')) {
 			bodyHtml: '<div>&nbsp;</div><img src="https://track.example/o.gif" width="1" height="1">',
 			isRead: false,
 			receivedAt: at
+		},
+		// The mirror-image case: an image-only retail email whose text part is just
+		// a "view in browser" stub. Here the HTML *is* the message, so it must win.
+		{
+			threadId: hero.id,
+			messageId: `<${STAMP}-2@invalid>`,
+			direction: 'inbound' as const,
+			fromEmail: 'shop@example.com',
+			fromName: 'The Shop',
+			toEmails: ['owner@example.com'],
+			subject: `${STAMP} hero image only`,
+			bodyText: 'View this email in your browser',
+			bodyHtml:
+				'<p><img src="https://cdn.example/hero.png" alt="Summer sale" width="600" height="200"></p>',
+			isRead: false,
+			receivedAt: new Date(at.getTime() + 1000)
 		}
 	]);
 	console.log('seeded pixel thread');

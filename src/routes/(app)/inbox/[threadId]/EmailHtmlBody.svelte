@@ -48,7 +48,13 @@
 	const srcdoc = $derived(buildEmailSrcdoc(html, { showImages }));
 
 	function measure() {
-		const body = frame?.contentDocument?.body;
+		const doc = frame?.contentDocument;
+		// Skip a document that is still loading. Toggling "Load images" replaces the
+		// srcdoc, and a `ResizeObserver` callback that lands mid-navigation would
+		// otherwise measure the *new*, still-empty document and collapse the message
+		// to the 24px floor until `load` fires.
+		if (!doc || doc.readyState === 'loading') return;
+		const body = doc.body;
 		if (!body) return;
 		// The content's height has to come from the **body**, not from
 		// `documentElement.scrollHeight`: the root element's scroll height is floored
@@ -62,6 +68,10 @@
 
 	/** Opens a clicked link in a new tab instead of letting it take over the frame. */
 	function interceptLinkClick(event: MouseEvent) {
+		// `auxclick` covers every non-primary button; only the middle one means
+		// "open this".
+		if (event.type === 'auxclick' && event.button !== 1) return;
+
 		// Duck-typed, **not** `event.target instanceof Element`: the frame is its own
 		// realm with its own `Element` constructor, so an `instanceof` against this
 		// document's `Element` is always false for a node from inside the frame — the
@@ -112,7 +122,11 @@
 
 		if (listeningTo !== doc) {
 			listeningTo?.removeEventListener('click', interceptLinkClick);
+			listeningTo?.removeEventListener('auxclick', interceptLinkClick);
 			doc.addEventListener('click', interceptLinkClick);
+			// Middle-click too, or the reader's "open in a background tab" reflex hits
+			// the sandbox's silent block and reads as a dead link.
+			doc.addEventListener('auxclick', interceptLinkClick);
 			listeningTo = doc;
 		}
 	}
@@ -122,11 +136,19 @@
 	// hydration attaches the handler, and `load` fires once — so the frame would
 	// keep the 120px guess forever. Reading `frame` makes this run when the element
 	// is bound; if the document is already there, measure it now.
+	// Reading `srcdoc` as well as `frame` is deliberate: the toggle replaces the
+	// document, and this makes the effect tear down the observer and the listener
+	// bound to the outgoing one instead of leaving them pointed at a discarded body.
+	// `attach` then runs again from `onload` (or here, if the new document is
+	// already complete).
 	$effect(() => {
+		void srcdoc;
 		if (frame?.contentDocument?.readyState === 'complete') attach();
 		return () => {
 			observer?.disconnect();
+			observer = undefined;
 			listeningTo?.removeEventListener('click', interceptLinkClick);
+			listeningTo?.removeEventListener('auxclick', interceptLinkClick);
 			listeningTo = undefined;
 		};
 	});

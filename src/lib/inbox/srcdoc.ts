@@ -94,7 +94,13 @@ export function buildEmailSrcdoc(html: string, options: { showImages?: boolean }
 	// already have, so it reveals nothing to a third party. Remote schemes are
 	// what tracking pixels need.
 	const imgSrc = showImages ? 'img-src data: https: http:' : 'img-src data:';
-	const csp = `default-src 'none'; ${imgSrc}; style-src 'unsafe-inline'`;
+	// `upgrade-insecure-requests` only matters in the loaded state, and it matters
+	// because the app is served over https: an older newsletter's `http://` image
+	// would otherwise be killed as mixed content *after* the reader opted in and
+	// after the "blocked" notice has gone, leaving a broken image and no way to
+	// retry. Upgrading at least gives it a chance.
+	const upgrade = showImages ? '; upgrade-insecure-requests' : '';
+	const csp = `default-src 'none'; ${imgSrc}; style-src 'unsafe-inline'${upgrade}`;
 
 	return [
 		'<!doctype html><html><head><meta charset="utf-8">',

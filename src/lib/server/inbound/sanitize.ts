@@ -37,7 +37,15 @@ const FORBIDDEN_TAGS = [
 	'option',
 	'style',
 	'svg',
-	'math'
+	'math',
+	// `template` holds its children in a separate `content` DocumentFragment that
+	// `querySelectorAll` does not descend into, so a remote `<img>` parked in there
+	// is invisible to US-G02's image-blocking walk (its count would be wrong, and
+	// the URL would survive into the rendered document). Nothing in an email needs
+	// a template — it exists to be cloned by script, and script is forbidden — so
+	// dropping it outright is simpler and safer than teaching every future consumer
+	// to recurse into it.
+	'template'
 ];
 
 /**

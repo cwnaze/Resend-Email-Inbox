@@ -23,7 +23,7 @@ import {
 	addressListLabel,
 	bodyPlainText,
 	bodySnippet,
-	htmlHasVisibleText,
+	htmlHasVisibleContent,
 	htmlToPlainText,
 	relativeTime,
 	senderLabel
@@ -346,14 +346,40 @@ check(
 	prepareEmailHtml('<meta http-equiv="refresh" content="0;url=https://evil.example">') === null
 );
 
-console.log('htmlHasVisibleText (which body the thread view renders)');
-equal('is true for ordinary prose', htmlHasVisibleText('<p>Hello</p>'), true);
+console.log('htmlHasVisibleContent (which body the thread view renders)');
+equal('is true for ordinary prose', htmlHasVisibleContent('<p>Hello</p>'), true);
 equal(
 	'is false for a preheader-plus-tracking-pixel body that renders blank',
-	htmlHasVisibleText(prepareEmailHtml('<div>&nbsp;</div><img src="https://t/o.gif">')!.html),
+	htmlHasVisibleContent(
+		prepareEmailHtml('<div>&nbsp;</div><img src="https://t/o.gif" width="1" height="1">')!.html
+	),
 	false
 );
-equal('is false for markup with no text at all', htmlHasVisibleText('<div><br></div>'), false);
+equal('is false for markup with no text at all', htmlHasVisibleContent('<div><br></div>'), false);
+// The mirror-image mistake: an image-only retail email must not lose to its
+// "view this in your browser" text stub.
+equal(
+	'is true for an image-only body whose image is not pixel-sized',
+	htmlHasVisibleContent(
+		prepareEmailHtml('<p><img src="https://cdn/hero.png" width="600" height="400"></p>')!.html
+	),
+	true
+);
+equal(
+	'is true for an image-only body that declares no dimensions at all',
+	htmlHasVisibleContent(prepareEmailHtml('<p><img src="https://cdn/hero.png"></p>')!.html),
+	true
+);
+equal(
+	'a spacer gif does not count as content',
+	htmlHasVisibleContent('<img src="s.gif" width="1" height="120">'),
+	false
+);
+check(
+	'template content cannot hide a remote image from the blocking walk',
+	prepareEmailHtml('<p>hi</p><template><img src="http://t/px.gif"></template>')!.html ===
+		'<p>hi</p>'
+);
 
 console.log('buildEmailSrcdoc');
 const blockedDoc = buildEmailSrcdoc(remoteImage.html);

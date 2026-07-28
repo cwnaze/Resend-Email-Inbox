@@ -141,16 +141,52 @@ export function htmlToPlainText(html: string): string {
 }
 
 /**
- * Whether an HTML body actually contains readable text (US-G02).
- *
- * Used by the thread load to decide which body to render. An HTML part can be
- * non-empty markup and still show the reader nothing — a hidden preheader plus a
- * 1×1 tracking pixel is a real and common shape for transactional mail — and in
- * that case rendering the HTML instead of the `text/plain` alternative would
- * hide the entire message behind an empty frame.
+ * A `width`/`height` at or below this (in the attributes an email declares) means
+ * the image is a spacer or a tracking pixel, not something anyone is meant to
+ * look at.
  */
-export function htmlHasVisibleText(html: string): boolean {
-	return htmlToPlainText(html).trim() !== '';
+const TRACKING_PIXEL_MAX_PX = 3;
+
+/** `<img …>` tags, with their attribute text, from already-sanitized markup. */
+const IMG_TAG = /<img\b([^>]*)>/gi;
+
+function declaredPixels(attributes: string, name: 'width' | 'height'): number | null {
+	const match = new RegExp(`\\b${name}\\s*=\\s*"?(\\d+)`, 'i').exec(attributes);
+	return match ? Number(match[1]) : null;
+}
+
+/**
+ * Whether an HTML body has anything the reader is meant to see (US-G02).
+ *
+ * Used by the thread load to decide which body to render, and the distinction is
+ * not academic in either direction:
+ *
+ * - An HTML part can be non-empty markup and still show nothing — a hidden
+ *   preheader plus a 1×1 tracking pixel is a common shape for transactional mail
+ *   — and rendering *that* instead of the `text/plain` alternative hides the
+ *   whole message behind an empty frame.
+ * - But an image-only HTML part (a retail email that is one hero image) is the
+ *   real message, and its text alternative is usually a "View this email in your
+ *   browser" stub. Requiring *text* would throw the actual message away.
+ *
+ * So an image counts as visible content unless it declares itself pixel-sized.
+ * A dimensionless tracking pixel alongside a text body is the one shape this
+ * can still get wrong; it errs toward showing the sender's own markup, which is
+ * recoverable (the reader sees an empty frame) rather than losing the body.
+ */
+export function htmlHasVisibleContent(html: string): boolean {
+	if (htmlToPlainText(html).trim() !== '') return true;
+
+	for (const [, attributes] of html.matchAll(IMG_TAG)) {
+		const width = declaredPixels(attributes, 'width');
+		const height = declaredPixels(attributes, 'height');
+		const tiny =
+			(width !== null && width <= TRACKING_PIXEL_MAX_PX) ||
+			(height !== null && height <= TRACKING_PIXEL_MAX_PX);
+		if (!tiny) return true;
+	}
+
+	return false;
 }
 
 /**

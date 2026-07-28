@@ -19,7 +19,7 @@ import {
 	absoluteTime,
 	addressListLabel,
 	bodyPlainText,
-	htmlHasVisibleText,
+	htmlHasVisibleContent,
 	senderLabel
 } from '$lib/inbox/format';
 import { prepareEmailHtml } from '$lib/server/inbox/html';
@@ -59,14 +59,15 @@ export const load: PageServerLoad = async ({ params }) => {
 	// `bodySnippet`/`bodyPlainText`, which prefer text because a *preview* wants
 	// the cheapest readable form, not the richest.
 	//
-	// The `htmlHasVisibleText` qualifier is load-bearing, not defensive: a
+	// The `htmlHasVisibleContent` qualifier is load-bearing, not defensive: a
 	// transactional email whose HTML part is a hidden preheader plus a 1×1
 	// tracking pixel sanitizes to non-empty markup that renders *blank*, so
 	// preferring it unconditionally would replace a perfectly readable text body
 	// with an empty frame and a "1 remote image blocked" notice — the message lost
-	// with no way to reach it. When the HTML has no text of its own and there is
-	// no text alternative either, the HTML still wins (an image-only newsletter
-	// has nothing else to show).
+	// with no way to reach it. "Content" deliberately counts images and not just
+	// text, because the mirror-image mistake is just as bad: an image-only retail
+	// email *is* its hero image, and its text part is a "view in browser" stub, so
+	// demanding text would throw the real message away.
 	//
 	// No `threadId` here: it existed only for the placeholder page's debug line,
 	// and `params.threadId` is what any later story should read anyway.
@@ -79,7 +80,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			// fallback is still the best rendering left for a message with no text
 			// part (a body that sanitized away entirely, or blank HTML).
 			const text = bodyPlainText(message.bodyText, message.bodyHtml);
-			const useHtml = prepared !== null && (htmlHasVisibleText(prepared.html) || text === '');
+			const useHtml = prepared !== null && (htmlHasVisibleContent(prepared.html) || text === '');
 			return {
 				id: message.id,
 				sender: senderLabel(message.fromName, message.fromEmail),
