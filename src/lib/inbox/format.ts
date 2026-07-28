@@ -7,6 +7,31 @@
 const SNIPPET_MAX_LENGTH = 140;
 
 /**
+ * Decodes the handful of entities that would otherwise show up literally
+ * ("&amp;") to a reader of de-tagged HTML.
+ *
+ * `&amp;` is decoded **last** on purpose: doing it first turns `&amp;lt;` — the
+ * escaping of a literal "&lt;" — into `<`, i.e. it double-decodes.
+ */
+function decodeBasicEntities(text: string): string {
+	return text
+		.replace(/&nbsp;/gi, ' ')
+		.replace(/&lt;/gi, '<')
+		.replace(/&gt;/gi, '>')
+		.replace(/&quot;/gi, '"')
+		.replace(/&#39;/gi, "'")
+		.replace(/&amp;/gi, '&');
+}
+
+/** Removes tags whose *content* is not prose, along with the content itself. */
+function dropNonProseElements(html: string): string {
+	// `sanitizeEmailHtml` already forbids these, but a body stored before that
+	// ran (or an outbound body composed elsewhere) would otherwise leak CSS/JS
+	// source text into the reading view.
+	return html.replace(/<(script|style|head|title)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+}
+
+/**
  * Strips markup from a stored HTML body well enough for a one-line preview.
  *
  * This is *not* a sanitizer and must never be used to produce something that
@@ -15,24 +40,11 @@ const SNIPPET_MAX_LENGTH = 140;
  * text. It only needs to stop tag soup from showing up in the preview line.
  */
 function stripHtml(html: string): string {
-	return (
-		html
-			// Drop whole elements whose *content* is not prose. `sanitizeEmailHtml`
-			// already forbids these, but a body stored before that ran (or an
-			// outbound body composed elsewhere) would otherwise leak CSS/JS text
-			// into the preview.
-			.replace(/<(script|style|head|title)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+	return decodeBasicEntities(
+		dropNonProseElements(html)
 			.replace(/<br\s*\/?>/gi, ' ')
 			.replace(/<\/(p|div|tr|li|h[1-6])>/gi, ' ')
 			.replace(/<[^>]*>/g, '')
-			// A preview is text, so the entities that matter are the ones that
-			// would otherwise show up literally as `&amp;` to the reader.
-			.replace(/&nbsp;/gi, ' ')
-			.replace(/&amp;/gi, '&')
-			.replace(/&lt;/gi, '<')
-			.replace(/&gt;/gi, '>')
-			.replace(/&quot;/gi, '"')
-			.replace(/&#39;/gi, "'")
 	);
 }
 
@@ -90,5 +102,87 @@ export function relativeTime(date: Date, now: Date = new Date()): string {
 		month: 'short',
 		day: 'numeric',
 		...(sameYear ? {} : { year: 'numeric' })
+	});
+}
+
+/**
+ * De-tags an HTML body into readable plain text, preserving its line structure
+ * (US-G01).
+ *
+ * Distinct from `bodySnippet`'s use of the same de-tagging: a snippet collapses
+ * every run of whitespace into one line, while a body needs its paragraph and
+ * line breaks to stay readable. Like `bodySnippet`, this is **not** a sanitizer
+ * and its output must only ever be inserted as text.
+ *
+ * This is the *interim* rendering for an HTML-only message. US-G02 replaces it
+ * with a sandboxed `<iframe srcdoc>` and per-message remote-image opt-in
+ * (prd-feature-thread-view FR-2/FR-3); until that exists, showing a de-tagged
+ * transcript is strictly better than either shipping raw markup to the browser
+ * or showing the reader nothing at all.
+ */
+export function htmlToPlainText(html: string): string {
+	const detagged = dropNonProseElements(html)
+		.replace(/<br\s*\/?>/gi, '\n')
+		.replace(/<\/(p|div|tr|li|h[1-6]|blockquote|table|section|article)\s*>/gi, '\n\n')
+		.replace(/<[^>]*>/g, '');
+
+	return (
+		decodeBasicEntities(detagged)
+			// Horizontal whitespace collapses (HTML's own rule, and email HTML is
+			// full of indentation); vertical whitespace is the structure worth
+			// keeping, capped at one blank line so a table-based layout doesn't
+			// open with twenty of them.
+			.replace(/\r\n?/g, '\n')
+			.replace(/[^\S\n]+/g, ' ')
+			.replace(/ *\n */g, '\n')
+			.replace(/\n{3,}/g, '\n\n')
+			.trim()
+	);
+}
+
+/**
+ * A message body as plain text, preferring `body_text` (stored verbatim, never
+ * markup) and falling back to de-tagged `body_html`.
+ *
+ * Same precedence as `bodySnippet`, deliberately: a thread row's preview and the
+ * message it opens should not be derived from different halves of the same row.
+ */
+export function bodyPlainText(bodyText: string | null, bodyHtml: string | null): string {
+	if (bodyText?.trim()) return bodyText.replace(/\r\n?/g, '\n').trimEnd();
+	return bodyHtml ? htmlToPlainText(bodyHtml) : '';
+}
+
+/**
+ * A recipient list as one display string, or `''` when there are none.
+ *
+ * The column is a nullable JSON array (`cc_emails`/`bcc_emails`), and a row
+ * written before a later story could hold `[]` or a blank entry, so both the
+ * null and the all-empty cases have to collapse to "render no line" rather than
+ * to a dangling "cc:" label.
+ */
+export function addressListLabel(addresses: string[] | null | undefined): string {
+	if (!addresses) return '';
+	return addresses
+		.map((address) => address.trim())
+		.filter((address) => address !== '')
+		.join(', ');
+}
+
+/**
+ * The full timestamp for a message header (US-G01) — unlike the list's
+ * `relativeTime`, a thread being read is exactly where the reader wants the
+ * actual date and time.
+ *
+ * Rendered in the viewer's locale-independent `en-US` form for the same reason
+ * `relativeTime` does: the app has a single owner and a deterministic string is
+ * what makes this assertable from a verification script.
+ */
+export function absoluteTime(date: Date): string {
+	return date.toLocaleString('en-US', {
+		year: 'numeric',
+		month: 'short',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit'
 	});
 }

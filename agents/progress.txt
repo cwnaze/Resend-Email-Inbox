@@ -33,6 +33,9 @@
 - One shared helper should build every query string a page's URL state uses (each control edits its own param, copies the rest) — that's what makes two independent view states representable at once, and it can't be retrofitted onto call sites that assemble `?a=…&b=…` by hand.
 - User input that reaches a SQL `LIKE` needs both wildcard escaping (`%`/`_`/the escape char, with an explicit `escape` clause) and an empty-string guard: `%%` matches every row, so an "active" filter silently shows everything.
 - Narrowing a capped list (search/filter) belongs in the query, before the `limit` — a post-filter in JS searches one page, not the data set.
+- A `+layout.server.ts` load runs *in parallel* with the `+page.server.ts` load it wraps, so a layout that renders data a page load mutates shows a pre-mutation snapshot. Persistent list/detail shells need the mutation moved to a form action (or an explicit invalidation) before the layout can hold the list.
+- Derive a view's presentation strings (snippets, plain-text bodies, formatted timestamps) in the server load, not the component: it keeps large source columns off the wire, and it's what lets a standalone script assert on exactly what the page renders.
+- `svelte/no-unused-props` rejects a *declared field* the component never reads, not just an unused prop — a child's props type has to be narrower than the parent's row shape when the parent uses a field (e.g. an `#each` key) the child doesn't.
 
 ## Progress Log
 
@@ -365,4 +368,21 @@
   - Never let a user-supplied search string reach a `LIKE` unescaped, and never let an empty one through: `%%` matches everything, so an "active" search would quietly show the unfiltered list. Both the parser and the query helper guard it.
   - Search must be applied in SQL *before* the list's `limit`, not as a JS filter on the returned page — otherwise the feature searches one page instead of the mailbox.
   - Two rodney gotchas: the command is `rodney input <sel> <text>` (there is no `type`), and `rodney submit <form-selector>` is the reliable way to submit a GET form (clicking the button worked too, but the selector must be the form for `submit`).
+---
+
+## [2026-07-28] - US-G01
+- Implemented the thread reading view. `/inbox/[threadId]` loads the thread plus every non-deleted member email ordered by `received_at` ascending, and renders sender, from/to/cc, an absolute timestamp and the body for each message; an unknown thread id or a thread whose every message is soft-deleted answers 404 behind a route-scoped `+error.svelte` empty state with a link back to the list.
+- Added `listThreadEmails` to `src/lib/server/db/emails.ts`, and `bodyPlainText` / `htmlToPlainText` / `addressListLabel` / `absoluteTime` to the pure `src/lib/inbox/format.ts` (refactoring its HTML de-tagging into shared `dropNonProseElements` / `decodeBasicEntities` helpers, and fixing an entity-decoding order bug along the way: `&amp;` decoded first double-decodes `&amp;lt;`).
+- Replaced US-F01's placeholder `[threadId]/+page.svelte` with the real view plus `ThreadMessage.svelte`; extended `[threadId]/+page.server.ts` from "mark read" to the full load.
+- **Deferred the list/detail split** US-F01/F02's notes had assigned to this story, and wrote the reason into CLAUDE.md and the code: a layout load runs in parallel with its page's load, so an inbox list in `inbox/+layout.svelte` would render a snapshot taken before this page's `markThreadRead` committed — the row just opened would keep its unread dot. That ordering belongs with US-G04's mark-read-on-view criterion.
+- HTML bodies render as de-tagged plain text for now, never `{@html}`: the sandboxed `<iframe srcdoc>` and per-message remote-image opt-in are US-G02's acceptance criteria.
+- Extended `src/lib/server/db/verify-inbox-list.mts` to 104 checks (the four new formatters on fixtures + `listThreadEmails` against the live DB), and `seed-f03-demo.mts` with a three-message conversation (HTML-only second message, cc, soft-deleted third) plus a `--hide-conversation` flag for the empty-thread 404 demo.
+- Files changed: src/lib/server/db/emails.ts, src/lib/inbox/format.ts, src/routes/(app)/inbox/[threadId]/+page.server.ts, src/routes/(app)/inbox/[threadId]/+page.svelte, src/routes/(app)/inbox/[threadId]/ThreadMessage.svelte (new), src/routes/(app)/inbox/[threadId]/+error.svelte (new), src/routes/(app)/inbox/+page.svelte (stale-comment update), src/lib/server/db/verify-inbox-list.mts, src/lib/server/db/seed-f03-demo.mts, CLAUDE.md, docs/demos/US-G01.md (new), agents/prd.json, agents/progress.txt.
+- Verified: `npm run check` (0 errors), `npm run lint` clean, 104/104 checks against the live Turso DB, and rodney in the browser (two visible messages oldest-first with the soft-deleted third absent from the count and the render, cc only where present, header carrying the newest message's own `Re: …` subject, the empty-thread 404 after `--hide-conversation`, the unknown-id 404, and the back link). `showboat verify docs/demos/US-G01.md` exits 0.
+- **Learnings for future iterations:**
+  - Layout loads and page loads run concurrently. Any persistent shell (list beside detail) that displays state its page load mutates will render stale — check that before promising a split in a handoff note.
+  - `svelte/no-unused-props` fires on a declared-but-unread *field* of a props object, so a child component's prop type has to be narrower than the row the parent maps over when the parent uses a field the child doesn't (here, the `#each` key).
+  - `toLocaleString('en-US')` separates the clock time from AM/PM with a narrow no-break space (U+202F) under current ICU, not a plain space — a regex assertion needs `\s`, and an exact-string assertion on a formatted time is timezone-dependent anyway.
+  - Beware invisible non-ASCII whitespace sneaking into source from generated text: a U+202F inside a regex literal made an assertion fail in a way that was invisible in the diff (`od -c` found it).
+  - A demo seeder should print no generated ids — `showboat verify` re-runs the script, so a pasted UUID can never reproduce. Navigate by searching and clicking instead.
 ---

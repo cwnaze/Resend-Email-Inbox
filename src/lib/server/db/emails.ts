@@ -4,7 +4,7 @@
 // first argument (typed via `Database` from `./types`) rather than importing the
 // `db` singleton, so this module never pulls in `$env/dynamic/private` and can
 // be exercised by a standalone `tsx` verification script.
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { emails, threads } from './schema';
 import type { Database } from './types';
 
@@ -38,6 +38,27 @@ export async function getEmailByMessageId(
 export async function getThreadById(db: Database, threadId: string): Promise<Thread | undefined> {
 	const [row] = await db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
 	return row;
+}
+
+/**
+ * Every visible message in a thread, oldest first (US-G01, FR-1).
+ *
+ * Soft-deleted emails are excluded here rather than filtered out in the load,
+ * which is what makes "the thread has no visible messages" a `length === 0`
+ * answer the page can 404 on — the same definition of "visible email" the inbox
+ * list's inner join uses.
+ *
+ * `id` breaks a tie on `received_at`: the sort key is a sender-supplied `Date:`
+ * header, so two messages can legitimately carry the same millisecond, and
+ * without the tie-breaker their order could flip between loads. Ascending on
+ * both, mirroring the descending pair `listInboxThreads` picks the newest with.
+ */
+export async function listThreadEmails(db: Database, threadId: string): Promise<Email[]> {
+	return db
+		.select()
+		.from(emails)
+		.where(and(eq(emails.threadId, threadId), eq(emails.isDeleted, false)))
+		.orderBy(asc(emails.receivedAt), asc(emails.id));
 }
 
 export type InsertInboundEmailResult = {
