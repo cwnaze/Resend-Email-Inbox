@@ -53,7 +53,11 @@
 		// srcdoc, and a `ResizeObserver` callback that lands mid-navigation would
 		// otherwise measure the *new*, still-empty document and collapse the message
 		// to the 24px floor until `load` fires.
-		if (!doc || doc.readyState === 'loading') return;
+		// `about:blank` is the document an iframe has before its `srcdoc` navigation
+		// happens, and it is already `complete` — so the mount-time effect would
+		// otherwise measure an empty body, write the 24px floor, and throw away the
+		// anti-flash guess until `load` fires and corrects it.
+		if (!doc || doc.readyState === 'loading' || doc.URL === 'about:blank') return;
 		const body = doc.body;
 		if (!body) return;
 		// The content's height has to come from the **body**, not from

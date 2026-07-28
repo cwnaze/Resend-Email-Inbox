@@ -31,6 +31,40 @@ export interface PreparedEmailHtml {
 	html: string;
 	/** How many images were blocked — 0 means the toggle isn't worth showing. */
 	blockedImageCount: number;
+	/**
+	 * Whether any image here is something the reader is meant to look at, as
+	 * opposed to a tracking pixel or a spacer.
+	 *
+	 * Decided here rather than by re-scanning the serialized markup downstream
+	 * because *here* the width/height are attributes on an element. A regex over
+	 * the finished string sees the whole `<img …>` tag — including the sender's URL
+	 * parked on `data-dt-blocked-src` — so a CDN link like `hero.png?height=2`
+	 * read as a 2px image and a retail email lost its only content.
+	 */
+	hasRenderableImage: boolean;
+}
+
+/**
+ * `width`/`height` at or below this means a spacer or a tracking pixel, not
+ * something anyone is meant to see.
+ */
+const TRACKING_PIXEL_MAX_PX = 3;
+
+/** A declared dimension in px, or `null` when it isn't a plain number (`100%`). */
+function declaredPixels(image: Element, name: 'width' | 'height'): number | null {
+	const raw = image.getAttribute(name)?.trim();
+	return raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : null;
+}
+
+function isRenderableImage(image: Element): boolean {
+	const width = declaredPixels(image, 'width');
+	const height = declaredPixels(image, 'height');
+	// Either axis being pixel-sized is enough: a 600×1 rule is a spacer, and an
+	// undeclared dimension is unknown, which we treat as "could be real".
+	return !(
+		(width !== null && width <= TRACKING_PIXEL_MAX_PX) ||
+		(height !== null && height <= TRACKING_PIXEL_MAX_PX)
+	);
 }
 
 /**
@@ -72,6 +106,12 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 
 	const fragment = DOMPurify.sanitize(html, {
 		...SANITIZE_OPTIONS,
+		// `template` is forbidden on *this* path only. Its children live in a
+		// separate `content` fragment that the walk below cannot reach, so a remote
+		// image in there would be neither parked nor counted. Forbidding it on the
+		// shared write path instead would delete the text inside it from the only
+		// copy of the message — see the note in `inbound/sanitize.ts`.
+		FORBID_TAGS: [...SANITIZE_OPTIONS.FORBID_TAGS, 'template'],
 		RETURN_DOM_FRAGMENT: true
 	}) as unknown as DocumentFragment;
 
@@ -87,7 +127,10 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 	}
 
 	let blockedImageCount = 0;
+	let hasRenderableImage = false;
 	for (const image of container.querySelectorAll('img')) {
+		if (isRenderableImage(image)) hasRenderableImage = true;
+
 		const src = image.getAttribute('src');
 		// A `src` DOMPurify rejected (`javascript:` and friends) is already gone by
 		// now, which is why parking one can never reintroduce a scheme the
@@ -101,5 +144,5 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 
 	const clean = container.innerHTML;
 	if (clean.trim() === '') return null;
-	return { html: clean, blockedImageCount };
+	return { html: clean, blockedImageCount, hasRenderableImage };
 }

@@ -19,7 +19,7 @@ import {
 	absoluteTime,
 	addressListLabel,
 	bodyPlainText,
-	htmlHasVisibleContent,
+	htmlHasVisibleText,
 	senderLabel
 } from '$lib/inbox/format';
 import { prepareEmailHtml } from '$lib/server/inbox/html';
@@ -59,15 +59,13 @@ export const load: PageServerLoad = async ({ params }) => {
 	// `bodySnippet`/`bodyPlainText`, which prefer text because a *preview* wants
 	// the cheapest readable form, not the richest.
 	//
-	// The `htmlHasVisibleContent` qualifier is load-bearing, not defensive: a
-	// transactional email whose HTML part is a hidden preheader plus a 1×1
-	// tracking pixel sanitizes to non-empty markup that renders *blank*, so
-	// preferring it unconditionally would replace a perfectly readable text body
-	// with an empty frame and a "1 remote image blocked" notice — the message lost
-	// with no way to reach it. "Content" deliberately counts images and not just
-	// text, because the mirror-image mistake is just as bad: an image-only retail
-	// email *is* its hero image, and its text part is a "view in browser" stub, so
-	// demanding text would throw the real message away.
+	// The "does the HTML actually show anything" qualifier is load-bearing, not
+	// defensive, and it has to cut both ways or a message becomes unreachable:
+	// HTML that is only a spacer and a tracking pixel renders *blank*, so
+	// preferring it would replace a readable text body with an empty frame and a
+	// "1 remote image blocked" notice; but an image-only retail email *is* its hero
+	// image, and its text part is a "view in browser" stub, so demanding text would
+	// throw the real message away just as badly.
 	//
 	// No `threadId` here: it existed only for the placeholder page's debug line,
 	// and `params.threadId` is what any later story should read anyway.
@@ -80,7 +78,13 @@ export const load: PageServerLoad = async ({ params }) => {
 			// fallback is still the best rendering left for a message with no text
 			// part (a body that sanitized away entirely, or blank HTML).
 			const text = bodyPlainText(message.bodyText, message.bodyHtml);
-			const useHtml = prepared !== null && (htmlHasVisibleContent(prepared.html) || text === '');
+			// Render the HTML when it has something to show: readable text, or an image
+			// that isn't a tracking pixel. When it has neither, the text part is the
+			// message — and if there is no text part either, `html` stays null so
+			// `ThreadMessage` renders its explicit "no body" line instead of an empty
+			// 24px frame with nothing in it and nothing to explain it.
+			const useHtml =
+				prepared !== null && (htmlHasVisibleText(prepared.html) || prepared.hasRenderableImage);
 			return {
 				id: message.id,
 				sender: senderLabel(message.fromName, message.fromEmail),

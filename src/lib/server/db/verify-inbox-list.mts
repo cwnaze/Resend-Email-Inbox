@@ -23,7 +23,7 @@ import {
 	addressListLabel,
 	bodyPlainText,
 	bodySnippet,
-	htmlHasVisibleContent,
+	htmlHasVisibleText,
 	htmlToPlainText,
 	relativeTime,
 	senderLabel
@@ -32,6 +32,7 @@ import { inboxFilterSearch, parseInboxFilter } from '../../inbox/filter.js';
 import { inboxSearchSearch, parseInboxQuery } from '../../inbox/search.js';
 import { BLOCKED_IMAGE_ATTR, buildEmailSrcdoc, restoreBlockedImages } from '../../inbox/srcdoc.js';
 import { prepareEmailHtml } from '../inbox/html.js';
+import { sanitizeEmailHtml } from '../inbound/sanitize.js';
 
 let failures = 0;
 let checks = 0;
@@ -346,39 +347,75 @@ check(
 	prepareEmailHtml('<meta http-equiv="refresh" content="0;url=https://evil.example">') === null
 );
 
-console.log('htmlHasVisibleContent (which body the thread view renders)');
-equal('is true for ordinary prose', htmlHasVisibleContent('<p>Hello</p>'), true);
+console.log('body choice: htmlHasVisibleText + prepareEmailHtml.hasRenderableImage');
+equal('text: true for ordinary prose', htmlHasVisibleText('<p>Hello</p>'), true);
+equal('text: false for markup with no text at all', htmlHasVisibleText('<div><br></div>'), false);
+// A style-hidden preheader is NOT hidden by the time this runs — the sanitizer
+// strips `style` on the write path — so it counts as visible text. Asserted with
+// real words rather than `&nbsp;` so the check states the true behaviour instead
+// of dodging it; the limitation is documented on `htmlHasVisibleText`.
 equal(
-	'is false for a preheader-plus-tracking-pixel body that renders blank',
-	htmlHasVisibleContent(
-		prepareEmailHtml('<div>&nbsp;</div><img src="https://t/o.gif" width="1" height="1">')!.html
-	),
+	'text: a style-hidden preheader still counts as visible (style is stripped on write)',
+	htmlHasVisibleText(prepareEmailHtml('<div style="display:none">preheader junk</div>')!.html),
+	true
+);
+
+// The image half is decided from element attributes inside `prepareEmailHtml`,
+// never by re-scanning the serialized markup: the finished `<img …>` tag also
+// contains the sender's URL on `data-dt-blocked-src`, and a regex over it read
+// `hero.png?height=2` as a 2px image and discarded a retail email's only content.
+equal(
+	'image: a 1×1 tracking pixel is not renderable',
+	prepareEmailHtml('<img src="https://t/o.gif" width="1" height="1">')!.hasRenderableImage,
 	false
 );
-equal('is false for markup with no text at all', htmlHasVisibleContent('<div><br></div>'), false);
-// The mirror-image mistake: an image-only retail email must not lose to its
-// "view this in your browser" text stub.
 equal(
-	'is true for an image-only body whose image is not pixel-sized',
-	htmlHasVisibleContent(
-		prepareEmailHtml('<p><img src="https://cdn/hero.png" width="600" height="400"></p>')!.html
-	),
+	'image: a hero image is renderable',
+	prepareEmailHtml('<img src="https://cdn/hero.png" width="600" height="400">')!.hasRenderableImage,
 	true
 );
 equal(
-	'is true for an image-only body that declares no dimensions at all',
-	htmlHasVisibleContent(prepareEmailHtml('<p><img src="https://cdn/hero.png"></p>')!.html),
+	'image: no declared dimensions counts as renderable',
+	prepareEmailHtml('<img src="https://cdn/hero.png">')!.hasRenderableImage,
 	true
 );
 equal(
-	'a spacer gif does not count as content',
-	htmlHasVisibleContent('<img src="s.gif" width="1" height="120">'),
+	'image: a 600×1 spacer rule is not renderable',
+	prepareEmailHtml('<img src="https://cdn/rule.png" width="600" height="1">')!.hasRenderableImage,
 	false
 );
+equal(
+	'image: a percentage width is not pixel-sized',
+	prepareEmailHtml('<img src="https://cdn/hero.png" width="100%">')!.hasRenderableImage,
+	true
+);
+equal(
+	'image: a small number inside the parked URL cannot demote a real image',
+	prepareEmailHtml('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2">')!
+		.hasRenderableImage,
+	true
+);
+equal(
+	'image: alt text mentioning width=1 cannot demote a real image',
+	prepareEmailHtml('<img src="https://cdn/hero.png" alt="chart width=1 height=1">')!
+		.hasRenderableImage,
+	true
+);
+
 check(
-	'template content cannot hide a remote image from the blocking walk',
+	'the read path drops <template> so its content cannot hide a remote image',
 	prepareEmailHtml('<p>hi</p><template><img src="http://t/px.gif"></template>')!.html ===
 		'<p>hi</p>'
+);
+// ...but the *write* path must not, or the only copy of the message loses the
+// text inside it (DOMPurify's default FORBID_CONTENTS includes `template`, and
+// AMP-for-Email bodies carry their content exactly that way).
+check(
+	'the write path keeps text inside a <template> rather than deleting it',
+	(sanitizeEmailHtml('<div><template>Order shipped!</template></div>') ?? '').includes(
+		'Order shipped!'
+	),
+	sanitizeEmailHtml('<div><template>Order shipped!</template></div>')
 );
 
 console.log('buildEmailSrcdoc');

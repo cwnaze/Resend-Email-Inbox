@@ -1,7 +1,7 @@
 # US-G02: Sanitized HTML rendering with image opt-in
 
-*2026-07-28T18:16:44Z by Showboat 0.6.1*
-<!-- showboat-id: 136ff4fc-f012-48ec-9779-e4f861f4acd4 -->
+*2026-07-28T18:29:57Z by Showboat 0.6.1*
+<!-- showboat-id: 36d130c5-6f95-4a33-be24-907154577a7c -->
 
 **US-G02 — Sanitized HTML rendering with image opt-in.** An HTML email body now renders inside a sandboxed `<iframe srcdoc>` (`sandbox="allow-same-origin"`, never `allow-scripts`) sized to its content height. Every remote `<img src>` is moved aside on the server before the markup crosses the wire, so nothing in a stored body reaches a third party on open; a per-message **Load images** button puts them back for that one message. A message with only `body_text` renders as preformatted, wrapped plain text and mounts no iframe at all.
 
@@ -10,7 +10,7 @@ What this story adds:
 - `src/lib/inbox/srcdoc.ts` — pure (no env/db/DOM/deps), shared by the load, the component and the verification script: `BLOCKED_IMAGE_ATTR`, `restoreBlockedImages`, `buildEmailSrcdoc`.
 - `src/lib/server/inbox/html.ts` — `prepareEmailHtml`, the read-path pass that re-sanitizes a stored body and parks each remote image URL on `data-dt-blocked-src`, returning the blocked count.
 - `src/routes/(app)/inbox/[threadId]/EmailHtmlBody.svelte` — the sandboxed frame, the toggle, content-height measurement, and link-click interception.
-- `htmlHasVisibleContent` in `src/lib/inbox/format.ts`, and `SANITIZE_OPTIONS` exported from `src/lib/server/inbound/sanitize.ts` so the write path and this read path cannot sanitize under different rules.
+- `htmlHasVisibleText` in `src/lib/inbox/format.ts` (with the image half decided inside `prepareEmailHtml`, where the width/height are element attributes), and `SANITIZE_OPTIONS` exported from `src/lib/server/inbound/sanitize.ts` so the write path and this read path cannot sanitize under different rules.
 
 Decisions worth keeping:
 
@@ -24,7 +24,7 @@ Three things the sandbox does **not** give you for free. All three were found by
 - **A sandbox without `allow-popups` does not make links inert.** A plain `<a href>` navigates the frame *itself*, which sandbox always permits — so a phishing link rendered the attacker's page inside this app's chrome, and the frame went cross-origin, silently killing the height measurement with it. The fix is declarative: the srcdoc carries `<base target="_blank">`, and opening a new context is exactly what the sandbox blocks, so the worst case is "nothing happens" even with no JS. The component's click handler is an upgrade on top, turning that into a real new tab.
 - **`documentElement.scrollHeight` is floored at the frame's own viewport height**, so measuring it returns whatever height was last set: the frame could only ever grow, never shrink, and every short message was padded out to the initial guess. The content height comes from the **body** box instead.
 - **A body's last bottom margin collapses through the body**, so `body.scrollHeight` alone stopped short of the final line and clipped it. The srcdoc stylesheet sets `display: flow-root` on the body to contain that margin — load-bearing for sizing, not cosmetic.
-- **`<template>` content is invisible to `querySelectorAll`** (it lives in a separate fragment), so a remote image parked inside one was neither blocked nor counted. `template` is now in `FORBIDDEN_TAGS` — nothing in an email needs one, since it exists to be cloned by script and script is forbidden.
+- **`<template>` content is invisible to `querySelectorAll`** (it lives in a separate fragment), so a remote image parked inside one was neither blocked nor counted. It is forbidden on the **read** path only: doing it on the shared write path deletes the text inside the element from the only copy of the message, and AMP-for-Email bodies carry their content exactly that way.
 
 ## Quality checks
 
@@ -74,14 +74,19 @@ prepareEmailHtml
   ok   drops remote media src outright
   ok   never parks a javascript: src
   ok   a meta refresh cannot survive to redirect the frame
-htmlHasVisibleContent (which body the thread view renders)
-  ok   is true for ordinary prose
-  ok   is false for a preheader-plus-tracking-pixel body that renders blank
-  ok   is false for markup with no text at all
-  ok   is true for an image-only body whose image is not pixel-sized
-  ok   is true for an image-only body that declares no dimensions at all
-  ok   a spacer gif does not count as content
-  ok   template content cannot hide a remote image from the blocking walk
+body choice: htmlHasVisibleText + prepareEmailHtml.hasRenderableImage
+  ok   text: true for ordinary prose
+  ok   text: false for markup with no text at all
+  ok   text: a style-hidden preheader still counts as visible (style is stripped on write)
+  ok   image: a 1×1 tracking pixel is not renderable
+  ok   image: a hero image is renderable
+  ok   image: no declared dimensions counts as renderable
+  ok   image: a 600×1 spacer rule is not renderable
+  ok   image: a percentage width is not pixel-sized
+  ok   image: a small number inside the parked URL cannot demote a real image
+  ok   image: alt text mentioning width=1 cannot demote a real image
+  ok   the read path drops <template> so its content cannot hide a remote image
+  ok   the write path keeps text inside a <template> rather than deleting it
 buildEmailSrcdoc
   ok   is a full document
   ok   restricts img-src to data: while images are blocked
@@ -97,7 +102,7 @@ node --env-file=.env node_modules/.bin/tsx src/lib/server/db/verify-inbox-list.m
 ```
 
 ```output
-137/137 checks passed
+142/142 checks passed
 ```
 
 ## Browser verification
@@ -246,14 +251,15 @@ true
 
 The third acceptance criterion is about a message with *only* `body_text`, but the interesting cases have **both**, and they cut in opposite directions:
 
-- HTML that is a hidden preheader plus a tracking pixel (common in transactional mail) sanitizes to non-empty markup that renders **blank**. Preferring it would hide the message behind an empty frame and a "1 remote image blocked" notice.
+- HTML that is only a spacer plus a tracking pixel sanitizes to non-empty markup that renders **blank**. Preferring it would hide the message behind an empty frame and a "1 image blocked" notice.
 - HTML that is one hero image (a retail email) **is** the message, and its text part is a "View this email in your browser" stub. Demanding *text* would throw the real message away.
+- And when the HTML shows nothing *and* there is no text part, neither branch applies: the explicit "no body" line has to win, not an empty frame.
 
-So `htmlHasVisibleContent` counts text *or* an image that does not declare itself pixel-sized. Both threads below come from the same seeder.
+So the choice is `htmlHasVisibleText(...) || prepared.hasRenderableImage`. The image half is decided inside `prepareEmailHtml`, from the element's own `width`/`height`, **not** by a regex over the finished markup — that regex also saw the sender's URL parked on `data-dt-blocked-src`, so a CDN link like `hero.png?h=1` read as a 1px image and discarded a retail email's only content. The seeded hero URL carries exactly that parameter. All three threads come from one seeder.
 
 ```bash
 node --env-file=.env node_modules/.bin/tsx src/lib/server/db/seed-g02-pixel.mts
-for q in "g02-pixel+pixel" "g02-pixel+hero"; do
+for q in "g02-pixel+pixel" "g02-pixel+hero" "g02-pixel+nothing"; do
   rodney open "http://localhost:5173/inbox?q=$q" >/dev/null
   rodney waitstable >/dev/null
   rodney click "ul li a" >/dev/null
@@ -279,13 +285,18 @@ seeded pixel thread
    pre blocks: 0
    Load images buttons: 1
    what the reader sees: Load images
+== g02-pixel+nothing
+   iframes mounted: 0
+   pre blocks: 0
+   Load images buttons: 0
+   what the reader sees: This message has no body.
 ```
 
 ```bash {image}
 ![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](/private/tmp/claude-501/-Users-bloodintern1-Desktop-Resend-Email-Inbox/04f39db3-4c26-412a-b51d-fdebda8a45cc/scratchpad/g02-fixed.png)
 ```
 
-![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](d6849325-2026-07-28.png)
+![The thread view with the second message's HTML body in its sandboxed frame: one remote image held behind a dashed placeholder, the inline data: image rendered, and the link visible rather than clipped at the frame bottom edge.](93a0a1f5-2026-07-28.png)
 
 ### Cleanup
 

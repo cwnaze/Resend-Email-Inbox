@@ -37,15 +37,7 @@ const FORBIDDEN_TAGS = [
 	'option',
 	'style',
 	'svg',
-	'math',
-	// `template` holds its children in a separate `content` DocumentFragment that
-	// `querySelectorAll` does not descend into, so a remote `<img>` parked in there
-	// is invisible to US-G02's image-blocking walk (its count would be wrong, and
-	// the URL would survive into the rendered document). Nothing in an email needs
-	// a template — it exists to be cloned by script, and script is forbidden — so
-	// dropping it outright is simpler and safer than teaching every future consumer
-	// to recurse into it.
-	'template'
+	'math'
 ];
 
 /**
@@ -64,6 +56,15 @@ const FORBIDDEN_ATTRS = ['srcset', 'background', 'ping', 'style', 'formaction', 
  * than a second, drifting copy of them — a body stored before this module
  * existed would otherwise be rendered under weaker rules than a body stored
  * after it.
+ *
+ * `template` is deliberately **not** forbidden here. Its children live in a separate `content` fragment that `querySelectorAll`
+ * cannot see, which matters to the read path (US-G02's image-blocking walk), so
+ * `server/inbox/html.ts` forbids it there. Doing it *here* would be data loss:
+ * DOMPurify's default `FORBID_CONTENTS` includes `template`, so forbidding the
+ * tag deletes the text inside it, and `body_html` is the only copy this app ever
+ * has. AMP-for-Email bodies (`<template type="amp-mustache">…`) are real mail and
+ * carry their content exactly that way. The read path re-sanitizes anyway, so
+ * forbidding it there costs nothing and forbidding it here cannot be undone.
  */
 export const SANITIZE_OPTIONS = {
 	FORBID_TAGS: FORBIDDEN_TAGS,
