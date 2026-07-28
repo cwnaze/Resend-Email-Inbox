@@ -1,8 +1,14 @@
 <script lang="ts">
 	/**
 	 * App shell for every route under the (app) group: a top bar (app mark,
-	 * search entry point, logout) above the routed content, with no
-	 * horizontal scroll down to 375px.
+	 * logout) above the routed content, with no horizontal scroll down to
+	 * 375px.
+	 *
+	 * US-J02's top bar also held a non-functional placeholder search input.
+	 * US-F04 removed it and put the real search box in the inbox subtree
+	 * (`inbox/SearchBox.svelte`), for the same reason the placeholder thread
+	 * list left this file: it searches the *inbox list*, so a `/contacts` page
+	 * must not inherit it.
 	 *
 	 * US-J02 stood this up with a fixed 360px left column holding a
 	 * placeholder for the thread list. US-F01 removed that column: the
@@ -26,18 +32,7 @@
 			dusk // inbox
 		</a>
 
-		<form role="search" class="mx-auto min-w-0 flex-1 sm:max-w-sm">
-			<label class="sr-only" for="app-shell-search">Search threads</label>
-			<input
-				id="app-shell-search"
-				type="search"
-				name="q"
-				placeholder="Search"
-				class="w-full min-w-0 rounded border border-border bg-surface px-2.5 py-1.5 font-mono text-sm text-text-primary transition-colors duration-fast ease-standard placeholder:text-text-muted focus:border-accent focus:outline-none"
-			/>
-		</form>
-
-		<form method="POST" action="/api/auth/logout" class="shrink-0">
+		<form method="POST" action="/api/auth/logout" class="ml-auto shrink-0">
 			<button
 				type="submit"
 				class="rounded border border-border bg-surface px-3 py-1.5 text-sm text-text-primary transition-colors duration-fast ease-standard hover:border-danger hover:text-danger"
