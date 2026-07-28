@@ -17,9 +17,10 @@ import * as schema from './schema.js';
 import { emails, threads } from './schema.js';
 import type { Database } from './types.js';
 import { getThreadById, markThreadRead } from './emails.js';
-import { listInboxThreads } from './inbox.js';
+import { inboxSearchLikePattern, listInboxThreads } from './inbox.js';
 import { bodySnippet, relativeTime, senderLabel } from '../../inbox/format.js';
 import { inboxFilterSearch, parseInboxFilter } from '../../inbox/filter.js';
+import { inboxSearchSearch, parseInboxQuery } from '../../inbox/search.js';
 
 let failures = 0;
 let checks = 0;
@@ -146,6 +147,42 @@ equal(
 	inboxFilterSearch(new URLSearchParams('filter=read&q=invoice'), 'all'),
 	'?q=invoice'
 );
+
+// ---------------------------------------------------------------------------
+// Pure: subject/sender search (US-F04)
+// ---------------------------------------------------------------------------
+
+console.log('parseInboxQuery');
+equal('keeps a plain query', parseInboxQuery('invoice'), 'invoice');
+equal('trims surrounding whitespace', parseInboxQuery('  invoice  '), 'invoice');
+equal('collapses internal whitespace', parseInboxQuery('invoice   #4'), 'invoice #4');
+equal('a missing param is no search', parseInboxQuery(null), '');
+equal('a whitespace-only param is no search, not a %% match', parseInboxQuery('   '), '');
+check('caps the length', parseInboxQuery('a'.repeat(500)).length === 200);
+
+console.log('inboxSearchSearch');
+equal('sets the query param', inboxSearchSearch(new URLSearchParams(), 'invoice'), '?q=invoice');
+equal(
+	'preserves the filter when searching (FR-3)',
+	inboxSearchSearch(new URLSearchParams('filter=unread'), 'invoice'),
+	'?filter=unread&q=invoice'
+);
+equal(
+	'clearing drops the param but keeps the filter',
+	inboxSearchSearch(new URLSearchParams('filter=unread&q=invoice'), ''),
+	'?filter=unread'
+);
+equal(
+	'a whitespace-only query clears rather than searching for nothing',
+	inboxSearchSearch(new URLSearchParams('q=invoice'), '   '),
+	''
+);
+
+console.log('inboxSearchLikePattern');
+equal('wraps in wildcards and lowercases', inboxSearchLikePattern('InVoice'), '%invoice%');
+equal('escapes a literal percent', inboxSearchLikePattern('50%'), '%50\\%%');
+equal('escapes a literal underscore', inboxSearchLikePattern('a_b'), '%a\\_b%');
+equal('escapes the escape character itself', inboxSearchLikePattern('a\\b'), '%a\\\\b%');
 
 // ---------------------------------------------------------------------------
 // listInboxThreads against the live DB
@@ -329,6 +366,41 @@ try {
 		mine(await listInboxThreads(db, { limit: 200, filter: 'all' })),
 		mine(rows)
 	);
+
+	// -------------------------------------------------------------------------
+	// Subject/sender search (US-F04)
+	// -------------------------------------------------------------------------
+
+	console.log('listInboxThreads — search (US-F04)');
+
+	const found = async (query: string, filter?: 'all' | 'unread' | 'read') =>
+		mine(await listInboxThreads(db, { limit: 200, filter, query }));
+
+	equal('matches a subject substring', await found('older'), [`${stamp} older`]);
+	equal('is case-insensitive', await found('OLDER'), [`${stamp} older`]);
+	equal('matches every seeded thread on the shared stamp, in list order', await found(stamp), [
+		`${stamp} newer`,
+		`${stamp} multi`,
+		`${stamp} older`
+	]);
+	equal(
+		'matches the sender address of a member email that is not the preview',
+		await found('first@example.com'),
+		[`${stamp} multi`]
+	);
+	equal('matches a sender display name', await found('second sender'), [`${stamp} multi`]);
+	equal('ignores the sender of a soft-deleted email', await found('third@example.com'), []);
+	equal('a query with no hits returns nothing', await found(`${stamp} nothing-matches`), []);
+	equal('a bare wildcard is matched literally, not as "everything"', await found('%'), []);
+	equal('search and filter narrow together (FR-3)', await found(stamp, 'unread'), [
+		`${stamp} newer`,
+		`${stamp} multi`
+	]);
+	equal('a whitespace-only query is not a search', await found('   '), [
+		`${stamp} newer`,
+		`${stamp} multi`,
+		`${stamp} older`
+	]);
 
 	// -------------------------------------------------------------------------
 	// markThreadRead (US-F02)

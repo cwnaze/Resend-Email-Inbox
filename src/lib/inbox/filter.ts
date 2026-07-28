@@ -3,6 +3,7 @@
 // Pure like `format.ts` — no env, no db, no DOM — so the server load, the
 // Svelte components and a standalone `tsx` script all read the same definition
 // of what a valid filter value is.
+import { withListParam } from './params';
 
 /** The filter values the control offers, in the order it renders them. */
 export const INBOX_FILTERS = ['all', 'unread', 'read'] as const;
@@ -48,12 +49,9 @@ export function inboxFilterLabel(filter: InboxFilter): string {
  * writing `?filter=all`, keeping the default view's URL clean.
  */
 export function inboxFilterSearch(current: URLSearchParams, filter: InboxFilter): string {
-	const params = new URLSearchParams(current);
-	if (filter === DEFAULT_INBOX_FILTER) {
-		params.delete(INBOX_FILTER_PARAM);
-	} else {
-		params.set(INBOX_FILTER_PARAM, filter);
-	}
-	const search = params.toString();
-	return search === '' ? '' : `?${search}`;
+	return withListParam(
+		current,
+		INBOX_FILTER_PARAM,
+		filter === DEFAULT_INBOX_FILTER ? null : filter
+	);
 }

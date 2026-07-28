@@ -30,6 +30,9 @@
 - Never let a sender-supplied filename decide an object-storage key or a path: derive the key from the provider's own id and use the filename only as a slugified, single-path-segment suffix.
 - A denormalized aggregate flag ("all children are X") must be **recomputed** from the children when it's updated, not assigned the value the caller expects — a concurrent insert between the child update and the parent update is exactly the case a blind assignment loses.
 - SvelteKit's app-wide `data-sveltekit-preload-data="hover"` (set in `app.html`) runs a link's `load` on hover, so any load with a side effect needs the link to opt down to `tap` — or the mutation moved to a form action.
+- One shared helper should build every query string a page's URL state uses (each control edits its own param, copies the rest) — that's what makes two independent view states representable at once, and it can't be retrofitted onto call sites that assemble `?a=…&b=…` by hand.
+- User input that reaches a SQL `LIKE` needs both wildcard escaping (`%`/`_`/the escape char, with an explicit `escape` clause) and an empty-string guard: `%%` matches every row, so an "active" filter silently shows everything.
+- Narrowing a capped list (search/filter) belongs in the query, before the `limit` — a post-filter in JS searches one page, not the data set.
 
 ## Progress Log
 
@@ -346,4 +349,20 @@
   - Build filter/search links off the live `URLSearchParams` rather than from scratch (FR-3), and drop the param for the default value so the default view's URL stays clean.
   - `rodney url` can lag a client-side navigation; `rodney js location.search` is the reliable read. `rodney waitstable` after a click is worth it before asserting on the new DOM.
   - Seeded demo rows with fixed 2019/2020 timestamps sort to the bottom of the inbox and render absolute dates, which keeps `showboat verify` output stable — real rows show relative times that change between runs, so filter assertions to the seeded rows.
+---
+
+## [2026-07-28] - US-F04
+- Implemented subject/sender search for the inbox list. The query lives in the URL (`?q=…`) beside the read filter, and narrows the list in SQL inside the existing single query.
+- Added `src/lib/inbox/params.ts` (`withListParam`) as the one place an inbox list-state query string is built, and refactored `inboxFilterSearch` (US-F03) onto it.
+- Added `src/lib/inbox/search.ts`: `INBOX_SEARCH_PARAM`, `MAX_INBOX_QUERY_LENGTH` (200), `parseInboxQuery` (collapse whitespace → trim → cap; whitespace-only is *no search*), `inboxSearchSearch`.
+- `listInboxThreads` gained a `query` option: `lower(threads.subject) like ?` OR an `exists` subquery over the thread's non-deleted emails' `from_email`/`from_name`. Escaped LIKE pattern via the exported `inboxSearchLikePattern`. Combines with `filter` via `and(...)` (FR-3).
+- Added `src/routes/(app)/inbox/SearchBox.svelte` (plain GET form + hidden filter input + Clear link) and wired it above `FilterTabs`; per-query empty state ("No matching threads").
+- Removed US-J02's non-functional placeholder search input from `(app)/+layout.svelte` — search belongs to the inbox subtree, not to every `(app)` route.
+- Files changed: src/lib/inbox/params.ts (new), src/lib/inbox/search.ts (new), src/lib/inbox/filter.ts, src/lib/server/db/inbox.ts, src/lib/server/db/verify-inbox-list.mts (77 checks, all pass), src/routes/(app)/inbox/SearchBox.svelte (new), src/routes/(app)/inbox/+page.server.ts, src/routes/(app)/inbox/+page.svelte, src/routes/(app)/+layout.svelte, CLAUDE.md, docs/demos/US-F04.md (new), agents/prd.json, agents/progress.txt.
+- Verified: `npm run check` (0 errors), `npm run lint` clean, 77/77 checks in verify-inbox-list.mts against the live Turso DB, and rodney in the browser (subject match, case-insensitivity, sender-name match, non-preview sender address match, `?q=%` matching literally, search+filter together, submit/Clear/back navigation, filter switch preserving `?q=`). `showboat verify docs/demos/US-F04.md` exits 0.
+- **Learnings for future iterations:**
+  - A `<form method="GET">` submit replaces the *entire* query string with that form's fields — any other URL state the page owns (here the read filter) has to be carried as a hidden input, or it is silently reset. That's the tradeoff for a JS-free search; the alternative is `goto()` with a rebuilt search string.
+  - Never let a user-supplied search string reach a `LIKE` unescaped, and never let an empty one through: `%%` matches everything, so an "active" search would quietly show the unfiltered list. Both the parser and the query helper guard it.
+  - Search must be applied in SQL *before* the list's `limit`, not as a JS filter on the returned page — otherwise the feature searches one page instead of the mailbox.
+  - Two rodney gotchas: the command is `rodney input <sel> <text>` (there is no `type`), and `rodney submit <form-selector>` is the reliable way to submit a GET form (clicking the button worked too, but the selector must be the form for `submit`).
 ---
