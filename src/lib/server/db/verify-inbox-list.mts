@@ -29,6 +29,8 @@ import {
 } from '../../inbox/format.js';
 import { inboxFilterSearch, parseInboxFilter } from '../../inbox/filter.js';
 import { inboxSearchSearch, parseInboxQuery } from '../../inbox/search.js';
+import { BLOCKED_IMAGE_ATTR, buildEmailSrcdoc, restoreBlockedImages } from '../../inbox/srcdoc.js';
+import { prepareEmailHtml } from '../inbox/html.js';
 
 let failures = 0;
 let checks = 0;
@@ -270,6 +272,100 @@ equal('wraps in wildcards and lowercases', inboxSearchLikePattern('InVoice'), '%
 equal('escapes a literal percent', inboxSearchLikePattern('50%'), '%50\\%%');
 equal('escapes a literal underscore', inboxSearchLikePattern('a_b'), '%a\\_b%');
 equal('escapes the escape character itself', inboxSearchLikePattern('a\\b'), '%a\\\\b%');
+
+// ---------------------------------------------------------------------------
+// Pure: prepareEmailHtml + the srcdoc builder (US-G02)
+// ---------------------------------------------------------------------------
+
+console.log('prepareEmailHtml');
+equal('returns null for a null body', prepareEmailHtml(null), null);
+equal('returns null for a blank body', prepareEmailHtml('   '), null);
+equal(
+	'returns null for a body that is entirely stripped',
+	prepareEmailHtml('<script>alert(1)</script>'),
+	null
+);
+
+const plainHtml = prepareEmailHtml('<p>Hello <strong>there</strong></p>')!;
+equal('keeps prose markup', plainHtml.html, '<p>Hello <strong>there</strong></p>');
+equal('counts no blocked images when there are none', plainHtml.blockedImageCount, 0);
+
+const remoteImage = prepareEmailHtml('<p>hi</p><img src="https://tracker.example/px.gif">')!;
+check(
+	'moves a remote image src onto the blocked attribute',
+	remoteImage.html.includes(`${BLOCKED_IMAGE_ATTR}="https://tracker.example/px.gif"`),
+	remoteImage.html
+);
+check('leaves no src attribute behind', !/\ssrc=/.test(remoteImage.html), remoteImage.html);
+equal('counts the blocked image', remoteImage.blockedImageCount, 1);
+
+equal(
+	'counts every blocked image',
+	prepareEmailHtml('<img src="http://a/1.png"><img src="//b/2.png">')!.blockedImageCount,
+	2
+);
+
+const dataImage = prepareEmailHtml('<img src="data:image/gif;base64,R0lGOD">')!;
+check('leaves a data: image loading', dataImage.html.includes('src="data:image'), dataImage.html);
+equal('does not count a data: image as blocked', dataImage.blockedImageCount, 0);
+equal(
+	'does not count a cid: image as blocked (nothing to load)',
+	prepareEmailHtml('<img src="cid:part1@example">')!.blockedImageCount,
+	0
+);
+
+const scripted = prepareEmailHtml(
+	'<p onclick="x()">hi</p><script>alert(1)</script><iframe src="https://e"></iframe>'
+)!;
+check('strips scripts', !/script/i.test(scripted.html), scripted.html);
+check('strips event handlers', !/onclick/i.test(scripted.html), scripted.html);
+check('strips nested iframes', !/iframe/i.test(scripted.html), scripted.html);
+
+const smuggled = prepareEmailHtml(`<img ${BLOCKED_IMAGE_ATTR}="https://evil.example/px.gif">`)!;
+equal(
+	'a sender-supplied blocked-src attribute does not survive to be restored',
+	restoreBlockedImages(smuggled.html).includes('evil.example'),
+	false
+);
+
+const media = prepareEmailHtml('<video src="https://v/x.mp4" poster="https://v/p.png"></video>')!;
+check('drops remote media src outright', !/https:\/\/v\//.test(media.html), media.html);
+
+console.log('buildEmailSrcdoc');
+const blockedDoc = buildEmailSrcdoc(remoteImage.html);
+check('is a full document', blockedDoc.startsWith('<!doctype html>'), blockedDoc.slice(0, 40));
+check(
+	'restricts img-src to data: while images are blocked',
+	blockedDoc.includes("default-src 'none'; img-src data:;"),
+	blockedDoc
+);
+check(
+	'keeps the image blocked in the document body',
+	blockedDoc.includes(BLOCKED_IMAGE_ATTR) && !/\ssrc=/.test(blockedDoc),
+	blockedDoc
+);
+
+const loadedDoc = buildEmailSrcdoc(remoteImage.html, { showImages: true });
+// The stylesheet mentions the attribute too (that's the placeholder selector),
+// so the "nothing is still blocked" half has to look at the body, not the
+// whole document.
+const loadedBody = loadedDoc.slice(loadedDoc.indexOf('<body>'));
+check(
+	'restores the src once images are loaded',
+	loadedBody.includes('src="https://tracker.example/px.gif"') &&
+		!loadedBody.includes(BLOCKED_IMAGE_ATTR),
+	loadedBody
+);
+check(
+	'opens img-src for remote schemes once images are loaded',
+	loadedDoc.includes('img-src data: https: http:;'),
+	loadedDoc
+);
+equal(
+	'restoreBlockedImages is a no-op on markup with nothing blocked',
+	restoreBlockedImages('<p>plain</p>'),
+	'<p>plain</p>'
+);
 
 // ---------------------------------------------------------------------------
 // listInboxThreads against the live DB

@@ -16,6 +16,7 @@ import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { getThreadById, listThreadEmails, markThreadRead } from '$lib/server/db/emails';
 import { absoluteTime, addressListLabel, bodyPlainText, senderLabel } from '$lib/inbox/format';
+import { prepareEmailHtml } from '$lib/server/inbox/html';
 
 export const load: PageServerLoad = async ({ params }) => {
 	const thread = await getThreadById(db, params.threadId);
@@ -38,24 +39,38 @@ export const load: PageServerLoad = async ({ params }) => {
 	// title.
 	const newest = messages[messages.length - 1];
 
-	// Bodies are reduced to plain text here rather than in the component so a
-	// large HTML body doesn't cross the wire only to be de-tagged in the
-	// browser, the same reason the list derives its snippets server-side.
-	// US-G02 replaces this with a sandboxed `<iframe srcdoc>` and will need the
-	// sanitized HTML on the wire instead.
+	// Body rendering (US-G02): an HTML body is sanitized and has its remote images
+	// blocked here, on the server, and crosses the wire as markup for the
+	// component's sandboxed iframe. A message with no HTML body sends plain text
+	// instead — no iframe is mounted for it — and the plain text is de-tagged
+	// here rather than in the component so a large body isn't shipped only to be
+	// reduced in the browser (same reason the list derives its snippets
+	// server-side).
+	//
+	// HTML wins when both are present: it is what the sender actually composed,
+	// and the `text/plain` alternative part is usually a degraded copy of it.
+	// That is the opposite precedence from `bodySnippet`/`bodyPlainText`, which
+	// deliberately prefer text because a *preview* wants the cheapest readable
+	// form, not the richest.
+	//
 	// No `threadId` here: it existed only for the placeholder page's debug line,
 	// and `params.threadId` is what any later story should read anyway.
 	return {
 		subject: newest.subject,
-		messages: messages.map((message) => ({
-			id: message.id,
-			sender: senderLabel(message.fromName, message.fromEmail),
-			fromEmail: message.fromEmail,
-			to: addressListLabel(message.toEmails),
-			cc: addressListLabel(message.ccEmails),
-			receivedAt: message.receivedAt,
-			timestamp: absoluteTime(message.receivedAt),
-			body: bodyPlainText(message.bodyText, message.bodyHtml)
-		}))
+		messages: messages.map((message) => {
+			const prepared = prepareEmailHtml(message.bodyHtml);
+			return {
+				id: message.id,
+				sender: senderLabel(message.fromName, message.fromEmail),
+				fromEmail: message.fromEmail,
+				to: addressListLabel(message.toEmails),
+				cc: addressListLabel(message.ccEmails),
+				receivedAt: message.receivedAt,
+				timestamp: absoluteTime(message.receivedAt),
+				html: prepared?.html ?? null,
+				blockedImageCount: prepared?.blockedImageCount ?? 0,
+				body: prepared ? '' : bodyPlainText(message.bodyText, null)
+			};
+		})
 	};
 };

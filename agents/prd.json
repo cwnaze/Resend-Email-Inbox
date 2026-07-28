@@ -361,8 +361,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 24,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "HTML bodies render in a sandboxed <iframe srcdoc> (sandbox=allow-same-origin, no allow-scripts) sized to content via contentDocument + ResizeObserver. Remote image srcs are parked on data-dt-blocked-src by a read-path DOMPurify pass (src/lib/server/inbox/html.ts) and restored per message by the Load images button; the srcdoc CSP enforces the same toggle a second time. data:/cid: are never blocked. Text-only messages render as a <pre>, no iframe. Links inside the frame are inert (would need allow-popups, which the criteria's sandbox list excludes)."
     },
     {
       "id": "US-G03",

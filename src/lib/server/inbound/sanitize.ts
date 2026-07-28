@@ -49,6 +49,28 @@ const FORBIDDEN_TAGS = [
 const FORBIDDEN_ATTRS = ['srcset', 'background', 'ping', 'style', 'formaction', 'action'];
 
 /**
+ * The single sanitizer configuration.
+ *
+ * Exported so the read-path pass that blocks remote images
+ * (`$lib/server/inbox/html.ts`, US-G02) re-sanitizes with *these* rules rather
+ * than a second, drifting copy of them — a body stored before this module
+ * existed would otherwise be rendered under weaker rules than a body stored
+ * after it.
+ */
+export const SANITIZE_OPTIONS = {
+	FORBID_TAGS: FORBIDDEN_TAGS,
+	FORBID_ATTR: FORBIDDEN_ATTRS,
+	// `data-*` attributes are inert on their own but are how a lot of
+	// tracking/templating markup smuggles state through; nothing in this app
+	// reads them, so drop them. (URI *schemes* are handled by DOMPurify's own
+	// allow-list, which already excludes `javascript:`.)
+	ALLOW_DATA_ATTR: false,
+	// Keep the fragment a fragment — no <html>/<body> wrapper injected into
+	// what we store.
+	WHOLE_DOCUMENT: false
+} as const;
+
+/**
  * Sanitizes an inbound HTML body.
  *
  * Returns `null` for a null/undefined/blank input so the column stays NULL
@@ -59,18 +81,7 @@ const FORBIDDEN_ATTRS = ['srcset', 'background', 'ping', 'style', 'formaction', 
 export function sanitizeEmailHtml(html: string | null | undefined): string | null {
 	if (typeof html !== 'string' || html.trim() === '') return null;
 
-	const clean = DOMPurify.sanitize(html, {
-		FORBID_TAGS: FORBIDDEN_TAGS,
-		FORBID_ATTR: FORBIDDEN_ATTRS,
-		// `data-*` attributes are inert on their own but are how a lot of
-		// tracking/templating markup smuggles state through; nothing in this app
-		// reads them, so drop them. (URI *schemes* are handled by DOMPurify's own
-		// allow-list, which already excludes `javascript:`.)
-		ALLOW_DATA_ATTR: false,
-		// Keep the fragment a fragment — no <html>/<body> wrapper injected into
-		// what we store.
-		WHOLE_DOCUMENT: false
-	});
+	const clean = DOMPurify.sanitize(html, SANITIZE_OPTIONS);
 
 	return clean.trim() === '' ? null : clean;
 }
