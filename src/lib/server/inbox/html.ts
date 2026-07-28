@@ -131,17 +131,28 @@ function isLocalSource(src: string): boolean {
  * `textContent` alone counts text that renders nothing: `<div hidden>x</div>`
  * survives sanitization, the UA stylesheet hides it, and counting its "x" made a
  * body of one hidden token plus a tracking pixel beat a readable `text/plain` part
- * — leaving the reader a blank 24px frame. Hidden subtrees are removed from a
- * *clone*, so the markup that gets rendered is untouched.
+ * — leaving the reader a blank 24px frame.
  *
- * `style="display:none"` cannot be caught this way: the sanitizer drops `style` on
- * the write path, so by the time this runs the element is genuinely visible. That
- * limitation is real and documented rather than papered over.
+ * Walks rather than cloning-and-stripping: this runs per message on every thread
+ * load, and a walk short-circuits on the first visible character instead of
+ * copying the whole tree (a 220KB body is not unusual in email).
+ *
+ * `style="display:none"` cannot be caught here at all: the sanitizer drops `style`
+ * on the write path, so by the time this runs the element is genuinely visible.
+ * That limitation is real and documented rather than papered over.
  */
-function hasVisibleText(container: Element): boolean {
-	const probe = container.cloneNode(true) as Element;
-	for (const hidden of probe.querySelectorAll('[hidden]')) hidden.remove();
-	return (probe.textContent ?? '').trim() !== '';
+function hasVisibleText(node: Node): boolean {
+	for (const child of node.childNodes) {
+		if (child.nodeType === 3) {
+			if ((child.nodeValue ?? '').trim() !== '') return true;
+			continue;
+		}
+		if (child.nodeType !== 1) continue;
+		// `hidden` survives sanitization and the UA stylesheet honours it.
+		if ((child as Element).hasAttribute('hidden')) continue;
+		if (hasVisibleText(child)) return true;
+	}
+	return false;
 }
 
 /**

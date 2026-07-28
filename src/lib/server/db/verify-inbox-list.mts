@@ -371,6 +371,25 @@ equal(
 	true
 );
 equal(
+	'text inside a [hidden] element does not count as visible (it renders nothing)',
+	visible('<div hidden>x</div><img src="https://t/p.gif" width="1" height="1">'),
+	false
+);
+check(
+	'...but the hidden element is still rendered as written (the text test must not mutate the body)',
+	prepareEmailHtml('<div hidden>keepme</div><p>hi</p>')!.html.includes('keepme')
+);
+equal(
+	'a 16x16 logo alone is not a reason to prefer HTML over a text part',
+	visible('<img src="https://cdn/logo.png" width="16" height="16">'),
+	false
+);
+equal(
+	'a 17x17 image is above the pixel threshold',
+	visible('<img src="https://cdn/logo.png" width="17" height="17">'),
+	true
+);
+equal(
 	'a 1x1 tracking pixel is not',
 	visible('<img src="https://t/o.gif" width="1" height="1">'),
 	false
