@@ -43,8 +43,9 @@ export const load: PageServerLoad = async ({ params }) => {
 	// browser, the same reason the list derives its snippets server-side.
 	// US-G02 replaces this with a sandboxed `<iframe srcdoc>` and will need the
 	// sanitized HTML on the wire instead.
+	// No `threadId` here: it existed only for the placeholder page's debug line,
+	// and `params.threadId` is what any later story should read anyway.
 	return {
-		threadId: thread.id,
 		subject: newest.subject,
 		messages: messages.map((message) => ({
 			id: message.id,
