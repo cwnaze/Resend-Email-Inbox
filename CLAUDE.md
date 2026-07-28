@@ -128,7 +128,7 @@
 
 ## App shell
 
-- `src/routes/(app)/+layout.svelte` is the real app shell (US-J02): a top bar (app mark, search input, `POST /api/auth/logout` form) plus a two-pane body — a fixed `w-[360px]` left column (`hidden lg:flex`, Tailwind's `lg` = 1024px matches the design's desktop breakpoint) and a flexible right pane rendering `{@render children()}`. Below `lg` the left column is hidden, giving the single-pane mobile/tablet stack. The left column currently holds placeholder text; US-F01 replaces its contents with the real thread list, US-J03's `EmptyState`/`Skeleton` land inside it too — don't restructure the shell itself for that, just swap what's inside the `<aside>`.
+- `src/routes/(app)/+layout.svelte` is the real app shell (US-J02): a top bar (app mark, search input, `POST /api/auth/logout` form) above a flexible pane rendering `{@render children()}`, with no horizontal scroll down to 375px. US-J02 also gave it a fixed `w-[360px]` left column (`hidden lg:flex`) as a placeholder for the thread list; **US-F01 removed that column** — a thread list belongs to the inbox subtree, not to every `(app)` route (`/contacts` in US-I01 would have inherited one beside it). The list/detail split lands in `inbox/+layout.svelte` in US-G01, so put it there rather than back in the shell.
 - **Any internal `<a href="/...">` (or programmatic navigation) must wrap the path in `resolve(...)` from `$app/paths`** (e.g. `href={resolve('/inbox')}`), not a raw string — this kit version's `svelte/no-navigation-without-resolve` lint rule fails `npm run lint` otherwise. Apply this to every new internal link across the app, not just the shell.
 
 ## Shared components

@@ -2,10 +2,11 @@
 	/**
 	 * The inbox thread list (US-F01).
 	 *
-	 * Renders in the shell's main pane. US-G01 introduces the thread detail
-	 * view and hoists this list into the shell's left `<aside>` column so the
-	 * two panes are list + detail; keeping it here for now avoids inventing a
-	 * layout-level data load for a pane that has nothing to sit beside yet.
+	 * Renders full-width in the shell's main pane: the shell has no list
+	 * column of its own (US-F01 removed the placeholder one — see
+	 * `(app)/+layout.svelte`). US-G01 introduces the thread detail view and
+	 * with it an `inbox/+layout.svelte` holding the list/detail split, at
+	 * which point this list moves into that layout's fixed-width column.
 	 *
 	 * Read/unread styling (US-F02), the read filter (US-F03) and search
 	 * (US-F04) all layer onto this list rather than replacing it.
