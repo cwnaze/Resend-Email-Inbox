@@ -23,6 +23,7 @@ import {
 	addressListLabel,
 	bodyPlainText,
 	bodySnippet,
+	htmlHasVisibleText,
 	htmlToPlainText,
 	relativeTime,
 	senderLabel
@@ -331,6 +332,29 @@ equal(
 const media = prepareEmailHtml('<video src="https://v/x.mp4" poster="https://v/p.png"></video>')!;
 check('drops remote media src outright', !/https:\/\/v\//.test(media.html), media.html);
 
+// A `javascript:` src is removed by DOMPurify's own URI allow-list before this
+// pass sees the element, so parking can never restore a scheme the sanitizer
+// refused. This is the check that pins that ordering.
+const scriptUri = prepareEmailHtml('<p>x</p><img src="javascript:alert(1)">')!;
+check(
+	'never parks a javascript: src',
+	!/javascript:/i.test(scriptUri.html) && scriptUri.blockedImageCount === 0,
+	scriptUri.html
+);
+check(
+	'a meta refresh cannot survive to redirect the frame',
+	prepareEmailHtml('<meta http-equiv="refresh" content="0;url=https://evil.example">') === null
+);
+
+console.log('htmlHasVisibleText (which body the thread view renders)');
+equal('is true for ordinary prose', htmlHasVisibleText('<p>Hello</p>'), true);
+equal(
+	'is false for a preheader-plus-tracking-pixel body that renders blank',
+	htmlHasVisibleText(prepareEmailHtml('<div>&nbsp;</div><img src="https://t/o.gif">')!.html),
+	false
+);
+equal('is false for markup with no text at all', htmlHasVisibleText('<div><br></div>'), false);
+
 console.log('buildEmailSrcdoc');
 const blockedDoc = buildEmailSrcdoc(remoteImage.html);
 check('is a full document', blockedDoc.startsWith('<!doctype html>'), blockedDoc.slice(0, 40));
@@ -342,6 +366,12 @@ check(
 check(
 	'keeps the image blocked in the document body',
 	blockedDoc.includes(BLOCKED_IMAGE_ATTR) && !/\ssrc=/.test(blockedDoc),
+	blockedDoc
+);
+
+check(
+	'forces every link into a new browsing context, which the sandbox then blocks',
+	blockedDoc.includes('<base target="_blank">'),
 	blockedDoc
 );
 

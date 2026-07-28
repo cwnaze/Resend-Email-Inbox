@@ -52,6 +52,11 @@ body {
 	font: 400 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
 	overflow-wrap: break-word;
 	word-break: break-word;
+	/* Load-bearing for sizing the frame, not cosmetic: this establishes a block
+	   formatting context, without which the last child's bottom margin collapses
+	   THROUGH the body, so body.scrollHeight reports a height that stops above the
+	   final line and the frame clips it. See EmailHtmlBody.svelte's measure(). */
+	display: flow-root;
 }
 img, video { max-width: 100%; height: auto; }
 img[${BLOCKED_IMAGE_ATTR}] {
@@ -93,6 +98,15 @@ export function buildEmailSrcdoc(html: string, options: { showImages?: boolean }
 
 	return [
 		'<!doctype html><html><head><meta charset="utf-8">',
+		// `target="_blank"` on every link is what actually contains a click, and it
+		// is deliberately declarative rather than scripted: a sandbox with no
+		// `allow-popups` *blocks* an attempt to open a new context, whereas a plain
+		// same-context click is always permitted. So this turns "the frame navigates
+		// itself to the sender's page, inside our chrome" into "nothing happens" —
+		// and it holds with no JS at all, before hydration and if hydration never
+		// happens. `EmailHtmlBody`'s click handler then upgrades "nothing happens"
+		// into "opens in a real new tab"; it is the nicety, this is the guarantee.
+		'<base target="_blank">',
 		`<meta http-equiv="Content-Security-Policy" content="${csp}">`,
 		`<style>${DOCUMENT_STYLES}</style></head><body>`,
 		body,

@@ -141,6 +141,19 @@ export function htmlToPlainText(html: string): string {
 }
 
 /**
+ * Whether an HTML body actually contains readable text (US-G02).
+ *
+ * Used by the thread load to decide which body to render. An HTML part can be
+ * non-empty markup and still show the reader nothing — a hidden preheader plus a
+ * 1×1 tracking pixel is a real and common shape for transactional mail — and in
+ * that case rendering the HTML instead of the `text/plain` alternative would
+ * hide the entire message behind an empty frame.
+ */
+export function htmlHasVisibleText(html: string): boolean {
+	return htmlToPlainText(html).trim() !== '';
+}
+
+/**
  * A message body as plain text, preferring `body_text` (stored verbatim, never
  * markup) and falling back to de-tagged `body_html`.
  *

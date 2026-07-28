@@ -121,7 +121,10 @@ if (cleanup) {
 			bodyHtml:
 				'<p>Second message, HTML only.</p><p>Second paragraph.</p>' +
 				'<p><img src="https://example.com/tracker.gif" alt="remote pixel" width="120" height="40"></p>' +
-				'<p><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAAAAAAALAAAAAABAAEAAAIBRAA7" alt="inline dot" width="24" height="24"></p>',
+				'<p><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAAAAAAALAAAAAABAAEAAAIBRAA7" alt="inline dot" width="24" height="24"></p>' +
+				// A link, to exercise the click interception: without it a click would
+				// navigate the frame itself and render a remote page inside the app.
+				'<p><a href="https://example.com/invoice">View invoice</a></p>',
 			isRead: false,
 			receivedAt: new Date(base + 180_000)
 		},

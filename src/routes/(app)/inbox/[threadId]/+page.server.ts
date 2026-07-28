@@ -15,7 +15,13 @@ import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { getThreadById, listThreadEmails, markThreadRead } from '$lib/server/db/emails';
-import { absoluteTime, addressListLabel, bodyPlainText, senderLabel } from '$lib/inbox/format';
+import {
+	absoluteTime,
+	addressListLabel,
+	bodyPlainText,
+	htmlHasVisibleText,
+	senderLabel
+} from '$lib/inbox/format';
 import { prepareEmailHtml } from '$lib/server/inbox/html';
 
 export const load: PageServerLoad = async ({ params }) => {
@@ -47,11 +53,20 @@ export const load: PageServerLoad = async ({ params }) => {
 	// reduced in the browser (same reason the list derives its snippets
 	// server-side).
 	//
-	// HTML wins when both are present: it is what the sender actually composed,
-	// and the `text/plain` alternative part is usually a degraded copy of it.
-	// That is the opposite precedence from `bodySnippet`/`bodyPlainText`, which
-	// deliberately prefer text because a *preview* wants the cheapest readable
-	// form, not the richest.
+	// HTML wins when both are present *and the HTML actually says something*: it
+	// is what the sender composed, and the `text/plain` alternative is usually a
+	// degraded copy of it. That is the opposite precedence from
+	// `bodySnippet`/`bodyPlainText`, which prefer text because a *preview* wants
+	// the cheapest readable form, not the richest.
+	//
+	// The `htmlHasVisibleText` qualifier is load-bearing, not defensive: a
+	// transactional email whose HTML part is a hidden preheader plus a 1×1
+	// tracking pixel sanitizes to non-empty markup that renders *blank*, so
+	// preferring it unconditionally would replace a perfectly readable text body
+	// with an empty frame and a "1 remote image blocked" notice — the message lost
+	// with no way to reach it. When the HTML has no text of its own and there is
+	// no text alternative either, the HTML still wins (an image-only newsletter
+	// has nothing else to show).
 	//
 	// No `threadId` here: it existed only for the placeholder page's debug line,
 	// and `params.threadId` is what any later story should read anyway.
@@ -59,6 +74,12 @@ export const load: PageServerLoad = async ({ params }) => {
 		subject: newest.subject,
 		messages: messages.map((message) => {
 			const prepared = prepareEmailHtml(message.bodyHtml);
+			// Note `message.bodyHtml` is passed through rather than `null`: when the
+			// HTML branch is *not* taken, `bodyPlainText`'s own de-tagged-HTML
+			// fallback is still the best rendering left for a message with no text
+			// part (a body that sanitized away entirely, or blank HTML).
+			const text = bodyPlainText(message.bodyText, message.bodyHtml);
+			const useHtml = prepared !== null && (htmlHasVisibleText(prepared.html) || text === '');
 			return {
 				id: message.id,
 				sender: senderLabel(message.fromName, message.fromEmail),
@@ -67,9 +88,9 @@ export const load: PageServerLoad = async ({ params }) => {
 				cc: addressListLabel(message.ccEmails),
 				receivedAt: message.receivedAt,
 				timestamp: absoluteTime(message.receivedAt),
-				html: prepared?.html ?? null,
-				blockedImageCount: prepared?.blockedImageCount ?? 0,
-				body: prepared ? '' : bodyPlainText(message.bodyText, null)
+				html: useHtml ? prepared.html : null,
+				blockedImageCount: useHtml ? prepared.blockedImageCount : 0,
+				body: useHtml ? '' : text
 			};
 		})
 	};
