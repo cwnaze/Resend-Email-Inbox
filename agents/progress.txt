@@ -28,6 +28,8 @@
 - Ingestion side effects that are *best-effort* (attachment download/upload) must be swallowed and logged, not thrown: the email row is already committed and the provider's redelivery short-circuits on the duplicate check, so a throw is an unrepairable retry loop.
 - Inject env-reading provider clients (Resend, R2) as a `deps` object into pure-ish server modules instead of importing them — that's what keeps those modules exercisable from a standalone `tsx` verification script with stubs.
 - Never let a sender-supplied filename decide an object-storage key or a path: derive the key from the provider's own id and use the filename only as a slugified, single-path-segment suffix.
+- A denormalized aggregate flag ("all children are X") must be **recomputed** from the children when it's updated, not assigned the value the caller expects — a concurrent insert between the child update and the parent update is exactly the case a blind assignment loses.
+- SvelteKit's app-wide `data-sveltekit-preload-data="hover"` (set in `app.html`) runs a link's `load` on hover, so any load with a side effect needs the link to opt down to `tap` — or the mutation moved to a form action.
 
 ## Progress Log
 
@@ -323,4 +325,14 @@
   - An httpOnly session cookie can't be set through `document.cookie`, so browser verification can't fake a session the way US-J02's demo did. What works: seed an `auth_codes` row with `hashAuthCode('123456')`, then from the page run `fetch('/api/auth/verify-code', { method: 'POST', body: JSON.stringify({ code: '123456' }) })` — the browser applies the endpoint's `Set-Cookie` itself. No need to drive the login UI or stub anything.
   - `showboat exec` appends its block even when the command produced nothing, so capturing a `git diff main...HEAD` **before** committing leaves an empty block that fails `showboat verify` later. Commit first, then capture — or edit the stale block out of the document.
   - `showboat image` copies the file next to the document and rewrites the reference, but the `{image}` source directive keeps pointing at the original path — don't delete the staging file afterwards.
+---
+
+## [2026-07-28] - US-F02
+- Implemented the unread visual treatment and mark-read-on-open: unread rows get a sage accent dot (`bg-accent`, #7fb4a6) in a fixed-width gutter plus a semibold sender / medium subject in the primary tone, read rows stay muted with no dot, and opening a thread marks every one of its emails read and recomputes `threads.is_read`.
+- Files changed: `src/lib/server/db/emails.ts` (`markThreadRead`, `getThreadById`), `src/routes/(app)/inbox/[threadId]/+page.server.ts` (new), `src/routes/(app)/inbox/[threadId]/+page.svelte`, `src/routes/(app)/inbox/ThreadRow.svelte`, `src/lib/server/db/verify-inbox-list.mts` (+6 checks, 40/40), `CLAUDE.md`, `docs/demos/US-F02.md`, `agents/prd.json`, `agents/progress.txt`.
+- **Learnings for future iterations:**
+  - `data-sveltekit-preload-data="hover"` is set on `<body>` in `src/app.html`, so a `load` with a side effect fires on *hover*. The thread rows set `data-sveltekit-preload-data="tap"` for exactly this reason; verified by hovering and reloading and seeing the dot survive. Any future mutating load needs the same opt-out.
+  - Recompute `threads.is_read` with `not exists` over non-deleted unread emails rather than setting it true — an inbound delivery landing mid-open would otherwise be silently hidden. Soft-deleted unread emails are deliberately excluded from that check.
+  - `rounded-full` does not make a circle in this app (the whole radius namespace is capped at 2-4px); a real dot needs `rounded-[50%]`.
+  - Browser-verifying read-state transitions works with the US-F01 recipe: seed an `auth_codes` row, `fetch('/api/auth/verify-code')` from the page, then assert on DOM classes (`span.bg-accent`) before and after clicking a row. A client-side `rodney back` does re-run the server load, so the cleared dot is observable without a hard reload.
 ---
