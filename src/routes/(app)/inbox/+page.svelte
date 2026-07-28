@@ -13,9 +13,21 @@
 	 */
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ThreadRow from './ThreadRow.svelte';
+	import FilterTabs from './FilterTabs.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+
+	// An empty list means something different under a filter than in a genuinely
+	// empty inbox, and "New mail will show up here" would be misleading advice
+	// when the mail exists and is simply filtered out.
+	const emptyCopy = $derived(
+		data.filter === 'unread'
+			? { message: 'Nothing unread', subCopy: 'Every thread has been read.' }
+			: data.filter === 'read'
+				? { message: 'Nothing read yet', subCopy: 'Threads you open will show up here.' }
+				: { message: 'Nothing here yet', subCopy: 'New mail will show up here.' }
+	);
 </script>
 
 <!--
@@ -26,9 +38,11 @@
 <section class="mx-auto flex min-h-full w-full max-w-3xl flex-col">
 	<h1 class="sr-only">Inbox</h1>
 
+	<FilterTabs current={data.filter} />
+
 	{#if data.threads.length === 0}
 		<div class="flex flex-1 items-center justify-center p-8">
-			<EmptyState message="Nothing here yet" subCopy="New mail will show up here." />
+			<EmptyState message={emptyCopy.message} subCopy={emptyCopy.subCopy} />
 		</div>
 	{:else}
 		<ul class="flex flex-col">

@@ -5,6 +5,9 @@
 import { desc, eq, sql } from 'drizzle-orm';
 import { emails, threads } from './schema';
 import type { Database } from './types';
+// Relative, not `$lib/...`: this module is also loaded by the standalone
+// `tsx` verification script, which has no Vite alias resolution.
+import type { InboxFilter } from '../../inbox/filter';
 
 export type InboxThreadRow = {
 	threadId: string;
@@ -39,12 +42,19 @@ export const INBOX_PAGE_SIZE = 50;
  * no row to join to and therefore drops out of the list entirely, without a
  * separate `NOT EXISTS` clause that could drift away from the preview's own
  * definition of "visible email".
+ *
+ * `filter` (US-F03) narrows to threads by read state. It filters on
+ * `threads.is_read` — the thread-level flag, which per the Data Model PRD means
+ * "every message in the thread is read" — rather than on the previewed email's
+ * own `is_read`, so a thread with one unread message among several still counts
+ * as unread here exactly as it does in the list's unread styling.
  */
 export async function listInboxThreads(
 	db: Database,
-	options: { limit?: number } = {}
+	options: { limit?: number; filter?: InboxFilter } = {}
 ): Promise<InboxThreadRow[]> {
 	const limit = options.limit ?? INBOX_PAGE_SIZE;
+	const filter = options.filter ?? 'all';
 
 	// `received_at` is the sort key, with `id` as a deterministic tie-breaker so
 	// two emails carrying the identical header timestamp can't make the preview
@@ -76,6 +86,7 @@ export async function listInboxThreads(
 		})
 		.from(threads)
 		.innerJoin(emails, eq(emails.id, latestVisibleEmailId))
+		.where(filter === 'all' ? undefined : eq(threads.isRead, filter === 'read'))
 		.orderBy(desc(threads.lastMessageAt), desc(threads.id))
 		.limit(limit);
 
