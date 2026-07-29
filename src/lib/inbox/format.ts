@@ -211,3 +211,39 @@ export function absoluteTime(date: Date): string {
 		minute: '2-digit'
 	});
 }
+
+const FILE_SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
+
+/**
+ * A human-readable byte count for an attachment's label (US-G03).
+ *
+ * Decimal units (1 KB = 1000 B), matching what a mail client and the sender's
+ * own OS report, so the number next to a filename agrees with what the sender
+ * saw. One decimal place from KB up, none for bytes — "1.5 KB" is useful,
+ * "1.5 B" is not.
+ *
+ * `size_bytes` is `integer NOT NULL` and is written from the bytes actually
+ * downloaded (see `inbound/attachments.ts`), so it is always a real count in
+ * practice. It is still guarded here rather than trusted, because this runs in
+ * the thread view: a negative, fractional or non-finite value should render an
+ * honest "0 B" or a rounded size, never `NaN undefined` in a message header.
+ */
+export function formatFileSize(bytes: number): string {
+	if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+
+	let value = Math.round(bytes);
+	let unitIndex = 0;
+	// Stop at the last unit rather than running off the end of the array — a
+	// petabyte attachment is impossible, but an out-of-range index would render
+	// `undefined` and that is the one outcome worth making unreachable.
+	while (value >= 1000 && unitIndex < FILE_SIZE_UNITS.length - 1) {
+		value /= 1000;
+		unitIndex += 1;
+	}
+
+	const unit = FILE_SIZE_UNITS[unitIndex];
+	// Bytes are whole by definition; `toFixed(1)` on an exact 1000-multiple would
+	// also read as "1.0 KB", so trim a trailing `.0`.
+	const rendered = unitIndex === 0 ? String(value) : value.toFixed(1).replace(/\.0$/, '');
+	return `${rendered} ${unit}`;
+}

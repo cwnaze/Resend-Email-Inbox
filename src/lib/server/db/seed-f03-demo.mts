@@ -1,8 +1,8 @@
 // Throwaway seeding helper for the inbox browser demos, added for US-F03 and
 // extended since: a read thread, an unread thread, a multi-message conversation
-// for the US-G01 thread view, and a login code — plus a `--cleanup` mode that
-// removes them again. Kept in the repo for the demos' reproducibility, not part
-// of the app.
+// for the US-G01 thread view, attachments (US-G03) on two of its messages, and a
+// login code — plus a `--cleanup` mode that removes them again, R2 objects
+// included. Kept in the repo for the demos' reproducibility, not part of the app.
 //
 // It deliberately prints no row ids: a demo that pasted a generated UUID into a
 // URL could not be re-run by `showboat verify`. Reach the seeded thread by
@@ -10,8 +10,9 @@
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { eq, like } from 'drizzle-orm';
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import * as schema from './schema.js';
-import { authCodes, emails, threads } from './schema.js';
+import { attachments, authCodes, emails, threads } from './schema.js';
 import { hashAuthCode } from '../auth/auth-codes.js';
 
 const STAMP = 'f03-demo';
@@ -28,6 +29,49 @@ const client = createClient({
 });
 const db = drizzle(client, { schema });
 
+// US-G03: the attachment demo needs objects that actually exist in the bucket,
+// or the download link presigns a key R2 answers 404 for. `$lib/server/r2` reads
+// `$env/dynamic/private` and so can't be imported under bare `tsx` — same
+// constraint `r2/verify.mts` works around, and the same way.
+const r2 = new S3Client({
+	region: 'auto',
+	endpoint: `https://${requireEnv('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com`,
+	credentials: {
+		accessKeyId: requireEnv('R2_ACCESS_KEY_ID'),
+		secretAccessKey: requireEnv('R2_SECRET_ACCESS_KEY')
+	}
+});
+const bucket = requireEnv('R2_BUCKET_NAME');
+
+/**
+ * The demo attachments. Deliberately tiny and text-based so the bytes are
+ * assertable from a verification script, and one per interesting case: a plain
+ * file, a name that needs the `filename*` header form, and one hanging off the
+ * soft-deleted message (which must stay unreachable).
+ */
+const DEMO_FILES = [
+	{
+		slot: 'conv-1' as const,
+		filename: 'notes.txt',
+		contentType: 'text/plain',
+		body: 'Attachment one, downloaded through a presigned R2 URL.\n'
+	},
+	{
+		slot: 'conv-1' as const,
+		filename: 'rapport-café.txt',
+		contentType: 'text/plain',
+		body: 'Attachment two — a non-ASCII filename, to exercise the RFC 5987 header.\n'
+	},
+	{
+		slot: 'conv-3' as const,
+		filename: 'unreachable.txt',
+		contentType: 'text/plain',
+		body: 'Hangs off the soft-deleted message; the download endpoint must 404.\n'
+	}
+];
+
+const objectKey = (index: number) => `inbound/${STAMP}/file-${index}`;
+
 const cleanup = process.argv.includes('--cleanup');
 // US-G01: soft-deletes every message in the seeded conversation, so the demo can
 // show the "thread with no visible messages" 404 without hand-editing rows.
@@ -35,6 +79,19 @@ const hideConversation = process.argv.includes('--hide-conversation');
 
 // Children before parents: the remote Turso connection enforces the FK.
 async function removeSeededRows() {
+	// Attachments first, and by their own key prefix rather than by a join: the
+	// email rows they reference are about to go, and an orphaned attachment row
+	// would block that delete.
+	await db.delete(attachments).where(like(attachments.r2ObjectKey, `inbound/${STAMP}/%`));
+	// Best-effort: a leftover object is invisible to the app (nothing references
+	// it), so a failure here must not stop the row cleanup.
+	await Promise.all(
+		DEMO_FILES.map((_, index) =>
+			r2
+				.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey(index) }))
+				.catch((err) => console.error(`R2 cleanup failed for ${objectKey(index)}:`, err))
+		)
+	);
 	await db.delete(emails).where(like(emails.messageId, `<${STAMP}%`));
 	await db.delete(threads).where(like(threads.subject, `${STAMP}%`));
 	await db.delete(authCodes).where(eq(authCodes.codeHash, hashAuthCode('123456')));
@@ -141,6 +198,47 @@ if (cleanup) {
 			receivedAt: new Date(base + 240_000)
 		}
 	]);
+
+	// US-G03: upload the demo objects, then one `attachments` row each. The email
+	// ids are read back rather than captured from a `.returning()` above, so the
+	// mapping is by `message_id` (the stable, human-readable key) instead of by
+	// the position of a row in an insert's result.
+	const conversationEmails = await db
+		.select({ id: emails.id, messageId: emails.messageId })
+		.from(emails)
+		.where(like(emails.messageId, `<${STAMP}-conv%`));
+	const emailIdBySlot = new Map(
+		conversationEmails.map((row) => [
+			row.messageId.replace(`<${STAMP}-`, '').replace('@invalid>', ''),
+			row.id
+		])
+	);
+
+	await Promise.all(
+		DEMO_FILES.map((file, index) =>
+			r2.send(
+				new PutObjectCommand({
+					Bucket: bucket,
+					Key: objectKey(index),
+					Body: Buffer.from(file.body, 'utf8'),
+					ContentType: file.contentType
+				})
+			)
+		)
+	);
+
+	await db.insert(attachments).values(
+		DEMO_FILES.map((file, index) => ({
+			emailId: emailIdBySlot.get(file.slot)!,
+			filename: file.filename,
+			contentType: file.contentType,
+			sizeBytes: Buffer.byteLength(file.body, 'utf8'),
+			r2ObjectKey: objectKey(index),
+			// Fixed, ascending, so the rendered order is the same on every run —
+			// `listAttachmentsForEmails` orders by `created_at`.
+			createdAt: new Date(base + index * 1000)
+		}))
+	);
 
 	await db.insert(authCodes).values({
 		codeHash: hashAuthCode('123456'),

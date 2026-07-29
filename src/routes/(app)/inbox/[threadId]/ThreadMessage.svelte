@@ -20,12 +20,15 @@
 	 * *this* document, only into the sandboxed one.
 	 */
 	import EmailHtmlBody from './EmailHtmlBody.svelte';
+	import AttachmentList from './AttachmentList.svelte';
 
 	// Deliberately narrower than the load's message shape: `id` is the `#each`
 	// key in the parent and nothing this component renders, and
 	// `svelte/no-unused-props` (correctly) rejects declaring a field a component
 	// doesn't use.
 	interface Props {
+		/** Passed straight through to `AttachmentList`, which needs it to build a download href. */
+		threadId: string;
 		message: {
 			sender: string;
 			fromEmail: string;
@@ -36,10 +39,11 @@
 			html: string | null;
 			blockedImageCount: number;
 			body: string;
+			attachments: { id: string; filename: string; size: string }[];
 		};
 	}
 
-	const { message }: Props = $props();
+	const { threadId, message }: Props = $props();
 
 	// Only worth a second line when the display name isn't already the address.
 	const showAddress = $derived(message.sender !== message.fromEmail);
@@ -118,5 +122,17 @@
 
 	{#if !message.html && !message.body}
 		<p class="mt-3 font-sans text-sm text-text-muted italic">This message has no body.</p>
+	{/if}
+
+	<!--
+		Below the body, per the story: an attachment is what the message came *with*,
+		not part of what it says. Rendered only when there is at least one — a
+		"0 attachments" heading on every message would be noise, and most messages
+		have none. A message whose attachments all failed to upload at ingest (that
+		is best-effort, see `inbound/attachments.ts`) has no rows here and correctly
+		shows nothing.
+	-->
+	{#if message.attachments.length > 0}
+		<AttachmentList {threadId} attachments={message.attachments} />
 	{/if}
 </article>
