@@ -12,3 +12,7 @@ bun.lockb
 /tasks/
 /agents/
 /docs/demos/
+
+# Regenerable graph output and local agent config (see .gitignore)
+/graphify-out/
+/.claude/

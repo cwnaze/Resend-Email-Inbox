@@ -24,3 +24,9 @@ vite.config.ts.timestamp-*
 
 # Rodney (local browser automation state, see agents/ralph.md)
 .rodney
+
+# graphify knowledge-graph output (regenerable via `graphify update .`)
+/graphify-out/
+
+# Local Claude Code agent config/state
+/.claude/
