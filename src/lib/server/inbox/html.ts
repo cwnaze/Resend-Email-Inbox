@@ -81,22 +81,22 @@ export interface PreparedEmailHtml {
 const TRACKING_PIXEL_MAX_PX = 16;
 
 /**
- * A declared dimension, split by unit; both `null` when it isn't a number.
+ * A declared pixel dimension, or `null` when the attribute doesn't state one.
  *
  * Tolerant of the shapes hand-written email HTML actually contains — `600px` and
  * `600.5` are invalid in a `width` attribute and browsers ignore the unit, but
  * senders write them, and reading them as "no size declared" would make a real
  * hero image lose to a "view in browser" text stub.
+ *
+ * A percentage (`width="50%"`) reads as *no* declared pixel size, which is the
+ * right answer rather than an oversight: it says nothing about how many pixels
+ * the image occupies, so it lands in the same ambiguous bucket as an undeclared
+ * size and the reader decides in the frame.
  */
-function declaredSize(
-	image: Element,
-	name: 'width' | 'height'
-): { px: number | null; pct: number | null } {
+function declaredPixels(image: Element, name: 'width' | 'height'): number | null {
 	const raw = image.getAttribute(name)?.trim() ?? '';
-	const percent = /^(\d+(?:\.\d+)?)\s*%$/.exec(raw);
-	if (percent) return { px: null, pct: Number(percent[1]) };
 	const pixels = /^(\d+(?:\.\d+)?)\s*(?:px)?$/i.exec(raw);
-	return { px: pixels ? Number(pixels[1]) : null, pct: null };
+	return pixels ? Number(pixels[1]) : null;
 }
 
 /**
@@ -109,9 +109,9 @@ function declaredSize(
  * decides in the frame.
  */
 function declaresPixelSize(image: Element): boolean {
-	const width = declaredSize(image, 'width');
-	const height = declaredSize(image, 'height');
-	return [width.px, height.px].some((px) => px !== null && px <= TRACKING_PIXEL_MAX_PX);
+	return [declaredPixels(image, 'width'), declaredPixels(image, 'height')].some(
+		(px) => px !== null && px <= TRACKING_PIXEL_MAX_PX
+	);
 }
 
 /**
@@ -232,10 +232,16 @@ export function prepareEmailHtml(html: string | null | undefined): PreparedEmail
 	let blockedImageCount = 0;
 	let hasLoadableImage = false;
 	for (const image of container.querySelectorAll('img')) {
-		const src = image.getAttribute('src');
+		const raw = image.getAttribute('src');
+		// A blank `src` is treated exactly like an absent one throughout: it fetches
+		// nothing a reader could see and there is nothing to park or restore, so it
+		// must neither make the body look like it has something to show nor be
+		// counted as a blocked remote image (which would offer a "Load images"
+		// button that cannot do anything).
+		const src = raw !== null && raw.trim() !== '' ? raw : null;
 		const hidden = isHidden(image);
 
-		// An image with no `src` at all — including one whose `javascript:` src
+		// An image with no usable `src` — including one whose `javascript:` src
 		// DOMPurify just removed — can never render, so it must not make the body
 		// look like it has something to show. Nor can one inside a non-rendering
 		// subtree (a `<div hidden>` wrapping a 600×400 image mounted a frame that
