@@ -48,5 +48,8 @@
 		"isomorphic-dompurify": "^3.19.0",
 		"resend": "^6.18.0",
 		"svix": "^1.99.1"
+	},
+	"overrides": {
+		"html-encoding-sniffer": "5.0.0"
 	}
 }
