@@ -29,6 +29,9 @@ import {
 } from '../../inbox/format.js';
 import { inboxFilterSearch, parseInboxFilter } from '../../inbox/filter.js';
 import { inboxSearchSearch, parseInboxQuery } from '../../inbox/search.js';
+import { BLOCKED_IMAGE_ATTR, buildEmailSrcdoc, restoreBlockedImages } from '../../inbox/srcdoc.js';
+import { prepareEmailHtml } from '../inbox/html.js';
+import { sanitizeEmailHtml } from '../inbound/sanitize.js';
 
 let failures = 0;
 let checks = 0;
@@ -270,6 +273,291 @@ equal('wraps in wildcards and lowercases', inboxSearchLikePattern('InVoice'), '%
 equal('escapes a literal percent', inboxSearchLikePattern('50%'), '%50\\%%');
 equal('escapes a literal underscore', inboxSearchLikePattern('a_b'), '%a\\_b%');
 equal('escapes the escape character itself', inboxSearchLikePattern('a\\b'), '%a\\\\b%');
+
+// ---------------------------------------------------------------------------
+// Pure: prepareEmailHtml + the srcdoc builder (US-G02)
+// ---------------------------------------------------------------------------
+
+console.log('prepareEmailHtml');
+equal('returns null for a null body', prepareEmailHtml(null), null);
+equal('returns null for a blank body', prepareEmailHtml('   '), null);
+equal(
+	'returns null for a body that is entirely stripped',
+	prepareEmailHtml('<script>alert(1)</script>'),
+	null
+);
+
+const plainHtml = prepareEmailHtml('<p>Hello <strong>there</strong></p>')!;
+equal('keeps prose markup', plainHtml.html, '<p>Hello <strong>there</strong></p>');
+equal('counts no blocked images when there are none', plainHtml.blockedImageCount, 0);
+
+const remoteImage = prepareEmailHtml('<p>hi</p><img src="https://tracker.example/px.gif">')!;
+check(
+	'moves a remote image src onto the blocked attribute',
+	remoteImage.html.includes(`${BLOCKED_IMAGE_ATTR}="https://tracker.example/px.gif"`),
+	remoteImage.html
+);
+check('leaves no src attribute behind', !/\ssrc=/.test(remoteImage.html), remoteImage.html);
+equal('counts the blocked image', remoteImage.blockedImageCount, 1);
+
+equal(
+	'counts every blocked image',
+	prepareEmailHtml('<img src="http://a/1.png"><img src="//b/2.png">')!.blockedImageCount,
+	2
+);
+
+const dataImage = prepareEmailHtml('<img src="data:image/gif;base64,R0lGOD">')!;
+check('leaves a data: image loading', dataImage.html.includes('src="data:image'), dataImage.html);
+equal('does not count a data: image as blocked', dataImage.blockedImageCount, 0);
+equal(
+	'does not count a cid: image as blocked (nothing to load)',
+	prepareEmailHtml('<img src="cid:part1@example">')!.blockedImageCount,
+	0
+);
+
+const scripted = prepareEmailHtml(
+	'<p onclick="x()">hi</p><script>alert(1)</script><iframe src="https://e"></iframe>'
+)!;
+check('strips scripts', !/script/i.test(scripted.html), scripted.html);
+check('strips event handlers', !/onclick/i.test(scripted.html), scripted.html);
+check('strips nested iframes', !/iframe/i.test(scripted.html), scripted.html);
+
+const smuggled = prepareEmailHtml(`<img ${BLOCKED_IMAGE_ATTR}="https://evil.example/px.gif">`)!;
+equal(
+	'a sender-supplied blocked-src attribute does not survive to be restored',
+	restoreBlockedImages(smuggled.html).includes('evil.example'),
+	false
+);
+
+const media = prepareEmailHtml('<video src="https://v/x.mp4" poster="https://v/p.png"></video>')!;
+check('drops remote media src outright', !/https:\/\/v\//.test(media.html), media.html);
+
+// A `javascript:` src is removed by DOMPurify's own URI allow-list before this
+// pass sees the element, so parking can never restore a scheme the sanitizer
+// refused. This is the check that pins that ordering.
+const scriptUri = prepareEmailHtml('<p>x</p><img src="javascript:alert(1)">')!;
+check(
+	'never parks a javascript: src',
+	!/javascript:/i.test(scriptUri.html) && scriptUri.blockedImageCount === 0,
+	scriptUri.html
+);
+check(
+	'a meta refresh cannot survive to redirect the frame',
+	prepareEmailHtml('<meta http-equiv="refresh" content="0;url=https://evil.example">') === null
+);
+
+console.log('body choice: hasVisibleText / hasLoadableImage / blockedImageCount');
+// The rule these back, and the reason it is shaped this way: the text part is
+// dropped ONLY when the HTML has real text of its own. Six review rounds of
+// deciding it from a size heuristic over the images produced a bypass at every
+// threshold (`width="4"`, then `width="17"`), and each bypass silently discarded a
+// readable message. So the heuristic no longer gets to decide that — it only
+// decides whether a frame is worth mounting.
+const text = (html: string) => prepareEmailHtml(html)?.hasVisibleText ?? null;
+const loadable = (html: string) => prepareEmailHtml(html)?.hasLoadableImage ?? null;
+const blocked = (html: string) => prepareEmailHtml(html)?.blockedImageCount ?? null;
+
+equal('prose is visible text', text('<p>Hello</p>'), true);
+equal('markup with nothing in it is not', text('<div><br></div>'), false);
+equal(
+	'an image-only body has no visible text',
+	text('<img src="https://cdn/h.png" width="600">'),
+	false
+);
+equal(
+	'a style-hidden preheader still counts as visible text (style is stripped on write)',
+	text('<div style="display:none">preheader junk</div>'),
+	true
+);
+equal(
+	'text inside a [hidden] element does not (it renders nothing)',
+	text('<div hidden>x</div>'),
+	false
+);
+check(
+	'...but the hidden element is still rendered as written (the text test must not mutate the body)',
+	prepareEmailHtml('<div hidden>keepme</div><p>hi</p>')!.html.includes('keepme')
+);
+
+equal(
+	'a hero image with px dimensions could show something',
+	loadable('<img src="https://cdn/h.png" width="600" height="400">'),
+	true
+);
+equal(
+	'a responsive hero sized in % could too',
+	loadable('<img src="https://cdn/h.png" width="100%">'),
+	true
+);
+equal(
+	'a 1x1 tracking pixel is not',
+	loadable('<img src="https://t/o.gif" width="1" height="1">'),
+	false
+);
+equal(
+	'a 600x1 spacer rule is not',
+	loadable('<img src="https://cdn/r.png" width="600" height="1">'),
+	false
+);
+equal(
+	'a declared 16x16 image is too small to be worth a frame',
+	loadable('<img src="https://cdn/logo.png" width="16" height="16">'),
+	false
+);
+equal(
+	'a 17x17 one is not',
+	loadable('<img src="https://cdn/logo.png" width="17" height="17">'),
+	true
+);
+equal(
+	'a dimensionless image stays ambiguous, so the reader decides in the frame',
+	loadable('<img src="https://t/o.gif?id=1">'),
+	true
+);
+equal(
+	'an image whose src the sanitizer removed is not',
+	loadable('<p><img src="javascript:alert(1)" width="600"></p>'),
+	false
+);
+equal(
+	'an image inside a [hidden] subtree cannot show anything',
+	loadable('<div hidden><img src="https://t/p.gif" width="600" height="400"></div>'),
+	false
+);
+equal(
+	'a px unit on a real size is read as a size',
+	loadable('<img src="https://cdn/h.png" width="600px">'),
+	true
+);
+equal(
+	'a decimal size is read as a size',
+	loadable('<img src="https://cdn/h.png" width="600.5">'),
+	true
+);
+equal(
+	'a px unit on a pixel size is still a pixel',
+	loadable('<img src="https://t/o.gif" width="1px" height="1px">'),
+	false
+);
+equal(
+	'a non-numeric size leaves it ambiguous',
+	loadable('<img src="https://t/o.gif" width="abc">'),
+	true
+);
+equal(
+	'a small number inside the parked URL cannot demote a real image',
+	loadable('<img src="https://cdn.example/hero.png?crop=1&h=1&height=2" width="600" height="200">'),
+	true
+);
+equal(
+	'alt text mentioning width=1 cannot demote a real image',
+	loadable(
+		'<img src="https://cdn/hero.png" width="600" height="400" alt="chart width=1 height=1">'
+	),
+	true
+);
+
+equal(
+	'a cid: reference this app cannot resolve is not loadable',
+	loadable('<img src="cid:img001">'),
+	false
+);
+equal(
+	'a data: image is loadable (the bytes are already here)',
+	loadable('<img src="data:image/gif;base64,R0lGOD" width="600">'),
+	true
+);
+
+// Text inside an element the UA stylesheet hides must not suppress the text part:
+// `hidden` is not the only such element.
+equal('a <dialog> without open renders nothing', text('<dialog>Full invoice text</dialog>'), false);
+equal('a <dialog open> does render', text('<dialog open>Shown text</dialog>'), true);
+equal('a <datalist> renders nothing', text('<datalist>Real text</datalist>'), false);
+
+// The count is a claim made to the reader, so it must not include images that
+// would still be invisible after loading.
+equal(
+	'a hidden image is blocked but not counted (the notice would be a lie)',
+	blocked('<div hidden><img src="https://t/x.gif" width="600" height="400"></div>'),
+	0
+);
+check(
+	'...though its src is still parked, because a hidden image is fetched by plenty of browsers',
+	prepareEmailHtml('<div hidden><img src="https://t/x.gif"></div>')!.html.includes(
+		BLOCKED_IMAGE_ATTR
+	)
+);
+
+// A `cid:`/`data:` image is never "blocked" (nothing to load, nobody to reach), so
+// a body whose only content is one mounts no frame — the honest "no body" line
+// renders instead of a blank frame with no notice and no toggle.
+equal('a cid: image is not counted as blocked', blocked('<img src="cid:img001">'), 0);
+equal(
+	'a data: image is not counted as blocked',
+	blocked('<img src="data:image/gif;base64,R0lGOD">'),
+	0
+);
+equal('a remote image is', blocked('<img src="https://t/o.gif">'), 1);
+
+// `<template>` keeps its children in a separate fragment `querySelectorAll` cannot
+// reach, so the read path drops the element outright...
+check(
+	'the read path drops <template> so its content cannot hide a remote image',
+	prepareEmailHtml('<p>hi</p><template><img src="http://t/px.gif"></template>')!.html ===
+		'<p>hi</p>'
+);
+// ...but the *write* path must not, or the only copy of the message loses the text
+// inside it (DOMPurify's default FORBID_CONTENTS includes `template`, and
+// AMP-for-Email bodies carry their content exactly that way).
+check(
+	'the write path keeps text inside a <template> rather than deleting it',
+	(sanitizeEmailHtml('<div><template>Order shipped!</template></div>') ?? '').includes(
+		'Order shipped!'
+	),
+	sanitizeEmailHtml('<div><template>Order shipped!</template></div>')
+);
+
+console.log('buildEmailSrcdoc');
+const blockedDoc = buildEmailSrcdoc(remoteImage.html);
+check('is a full document', blockedDoc.startsWith('<!doctype html>'), blockedDoc.slice(0, 40));
+check(
+	'restricts img-src to data: while images are blocked',
+	blockedDoc.includes("default-src 'none'; img-src data:;"),
+	blockedDoc
+);
+check(
+	'keeps the image blocked in the document body',
+	blockedDoc.includes(BLOCKED_IMAGE_ATTR) && !/\ssrc=/.test(blockedDoc),
+	blockedDoc
+);
+
+check(
+	'forces every link into a new browsing context, which the sandbox then blocks',
+	blockedDoc.includes('<base target="_blank">'),
+	blockedDoc
+);
+
+const loadedDoc = buildEmailSrcdoc(remoteImage.html, { showImages: true });
+// The stylesheet mentions the attribute too (that's the placeholder selector),
+// so the "nothing is still blocked" half has to look at the body, not the
+// whole document.
+const loadedBody = loadedDoc.slice(loadedDoc.indexOf('<body>'));
+check(
+	'restores the src once images are loaded',
+	loadedBody.includes('src="https://tracker.example/px.gif"') &&
+		!loadedBody.includes(BLOCKED_IMAGE_ATTR),
+	loadedBody
+);
+check(
+	'opens img-src for remote schemes once images are loaded',
+	loadedDoc.includes('img-src data: https: http:;'),
+	loadedDoc
+);
+equal(
+	'restoreBlockedImages is a no-op on markup with nothing blocked',
+	restoreBlockedImages('<p>plain</p>'),
+	'<p>plain</p>'
+);
 
 // ---------------------------------------------------------------------------
 // listInboxThreads against the live DB

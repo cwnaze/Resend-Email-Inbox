@@ -16,6 +16,7 @@ import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { getThreadById, listThreadEmails, markThreadRead } from '$lib/server/db/emails';
 import { absoluteTime, addressListLabel, bodyPlainText, senderLabel } from '$lib/inbox/format';
+import { prepareEmailHtml } from '$lib/server/inbox/html';
 
 export const load: PageServerLoad = async ({ params }) => {
 	const thread = await getThreadById(db, params.threadId);
@@ -38,24 +39,76 @@ export const load: PageServerLoad = async ({ params }) => {
 	// title.
 	const newest = messages[messages.length - 1];
 
-	// Bodies are reduced to plain text here rather than in the component so a
-	// large HTML body doesn't cross the wire only to be de-tagged in the
-	// browser, the same reason the list derives its snippets server-side.
-	// US-G02 replaces this with a sandboxed `<iframe srcdoc>` and will need the
-	// sanitized HTML on the wire instead.
+	// Body rendering (US-G02): an HTML body is sanitized and has its remote images
+	// blocked here, on the server, and crosses the wire as markup for the
+	// component's sandboxed iframe. A message with no HTML body sends plain text
+	// instead — no iframe is mounted for it — and the plain text is de-tagged
+	// here rather than in the component so a large body isn't shipped only to be
+	// reduced in the browser (same reason the list derives its snippets
+	// server-side).
+	//
+	// HTML wins when both are present *and the HTML actually says something*: it
+	// is what the sender composed, and the `text/plain` alternative is usually a
+	// degraded copy of it. That is the opposite precedence from
+	// `bodySnippet`/`bodyPlainText`, which prefer text because a *preview* wants
+	// the cheapest readable form, not the richest.
+	//
+	// The "does the HTML actually show anything" qualifier is load-bearing, not
+	// defensive, and it has to cut both ways or a message becomes unreachable:
+	// HTML that is only a spacer and a tracking pixel renders *blank*, so
+	// preferring it would replace a readable text body with an empty frame and a
+	// "1 remote image blocked" notice; but an image-only retail email *is* its hero
+	// image, and its text part is a "view in browser" stub, so demanding text would
+	// throw the real message away just as badly.
+	//
 	// No `threadId` here: it existed only for the placeholder page's debug line,
 	// and `params.threadId` is what any later story should read anyway.
 	return {
 		subject: newest.subject,
-		messages: messages.map((message) => ({
-			id: message.id,
-			sender: senderLabel(message.fromName, message.fromEmail),
-			fromEmail: message.fromEmail,
-			to: addressListLabel(message.toEmails),
-			cc: addressListLabel(message.ccEmails),
-			receivedAt: message.receivedAt,
-			timestamp: absoluteTime(message.receivedAt),
-			body: bodyPlainText(message.bodyText, message.bodyHtml)
-		}))
+		messages: messages.map((message) => {
+			const prepared = prepareEmailHtml(message.bodyHtml);
+			// Note `message.bodyHtml` is passed through rather than `null`: when the
+			// HTML branch is *not* taken, `bodyPlainText`'s own de-tagged-HTML
+			// fallback is still the best rendering left for a message with no text
+			// part (a body that sanitized away entirely, or blank HTML).
+			const text = bodyPlainText(message.bodyText, message.bodyHtml);
+			// Render the HTML when it has something to show: readable text, or an image
+			// that isn't a tracking pixel. When it has neither, the text part is the
+			// message — and if there is no text part either, `html` stays null so
+			// `ThreadMessage` renders its explicit "no body" line instead of an empty
+			// 24px frame with nothing in it and nothing to explain it.
+			// Two independent decisions, deliberately not one either/or — that either/or
+			// was the source of a whole family of bugs.
+			//
+			// A frame is mounted when there is anything a frame could show: real text, or
+			// an image that could actually display something. Deliberately *not* "any
+			// image we blocked": a body whose only image is a declared 1×1 tracker
+			// mounted a blank frame captioned "1 remote image blocked", whose only
+			// button existed to fire the beacon. Nothing to frame — an empty body, or one
+			// whose only image is an unresolvable `cid:` reference — leaves `html` null
+			// so the honest "no body" line can render instead.
+			//
+			// The text part is dropped **only** when the HTML has real text of its own.
+			// It is never dropped on the strength of the image heuristic, because that
+			// heuristic is always one attribute away from being wrong (`width="17"` on a
+			// tracking pixel), and being wrong used to mean a readable message with no
+			// way to reach it. So a frame whose content we cannot vouch for is shown
+			// *with* the text beneath it, and the reader loses nothing either way.
+			const showFrame = prepared !== null && (prepared.hasVisibleText || prepared.hasLoadableImage);
+			const showText = prepared === null || !prepared.hasVisibleText;
+
+			return {
+				id: message.id,
+				sender: senderLabel(message.fromName, message.fromEmail),
+				fromEmail: message.fromEmail,
+				to: addressListLabel(message.toEmails),
+				cc: addressListLabel(message.ccEmails),
+				receivedAt: message.receivedAt,
+				timestamp: absoluteTime(message.receivedAt),
+				html: showFrame ? prepared!.html : null,
+				blockedImageCount: showFrame ? prepared!.blockedImageCount : 0,
+				body: showText ? text : ''
+			};
+		})
 	};
 };

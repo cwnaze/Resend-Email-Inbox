@@ -49,6 +49,37 @@ const FORBIDDEN_TAGS = [
 const FORBIDDEN_ATTRS = ['srcset', 'background', 'ping', 'style', 'formaction', 'action'];
 
 /**
+ * The single sanitizer configuration.
+ *
+ * Exported so the read-path pass that blocks remote images
+ * (`$lib/server/inbox/html.ts`, US-G02) re-sanitizes with *these* rules rather
+ * than a second, drifting copy of them — a body stored before this module
+ * existed would otherwise be rendered under weaker rules than a body stored
+ * after it.
+ *
+ * `template` is deliberately **not** forbidden here. Its children live in a separate `content` fragment that `querySelectorAll`
+ * cannot see, which matters to the read path (US-G02's image-blocking walk), so
+ * `server/inbox/html.ts` forbids it there. Doing it *here* would be data loss:
+ * DOMPurify's default `FORBID_CONTENTS` includes `template`, so forbidding the
+ * tag deletes the text inside it, and `body_html` is the only copy this app ever
+ * has. AMP-for-Email bodies (`<template type="amp-mustache">…`) are real mail and
+ * carry their content exactly that way. The read path re-sanitizes anyway, so
+ * forbidding it there costs nothing and forbidding it here cannot be undone.
+ */
+export const SANITIZE_OPTIONS = {
+	FORBID_TAGS: FORBIDDEN_TAGS,
+	FORBID_ATTR: FORBIDDEN_ATTRS,
+	// `data-*` attributes are inert on their own but are how a lot of
+	// tracking/templating markup smuggles state through; nothing in this app
+	// reads them, so drop them. (URI *schemes* are handled by DOMPurify's own
+	// allow-list, which already excludes `javascript:`.)
+	ALLOW_DATA_ATTR: false,
+	// Keep the fragment a fragment — no <html>/<body> wrapper injected into
+	// what we store.
+	WHOLE_DOCUMENT: false
+} as const;
+
+/**
  * Sanitizes an inbound HTML body.
  *
  * Returns `null` for a null/undefined/blank input so the column stays NULL
@@ -59,18 +90,7 @@ const FORBIDDEN_ATTRS = ['srcset', 'background', 'ping', 'style', 'formaction', 
 export function sanitizeEmailHtml(html: string | null | undefined): string | null {
 	if (typeof html !== 'string' || html.trim() === '') return null;
 
-	const clean = DOMPurify.sanitize(html, {
-		FORBID_TAGS: FORBIDDEN_TAGS,
-		FORBID_ATTR: FORBIDDEN_ATTRS,
-		// `data-*` attributes are inert on their own but are how a lot of
-		// tracking/templating markup smuggles state through; nothing in this app
-		// reads them, so drop them. (URI *schemes* are handled by DOMPurify's own
-		// allow-list, which already excludes `javascript:`.)
-		ALLOW_DATA_ATTR: false,
-		// Keep the fragment a fragment — no <html>/<body> wrapper injected into
-		// what we store.
-		WHOLE_DOCUMENT: false
-	});
+	const clean = DOMPurify.sanitize(html, SANITIZE_OPTIONS);
 
 	return clean.trim() === '' ? null : clean;
 }

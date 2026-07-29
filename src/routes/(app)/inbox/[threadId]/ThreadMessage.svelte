@@ -8,11 +8,19 @@
 	 * measure, and a thin 1px divider between messages rather than a card with a
 	 * shadow.
 	 *
-	 * The body arrives as plain text (the load de-tags an HTML-only body). It is
-	 * rendered as text, never with `{@html}`: US-G02 is what introduces real HTML
-	 * rendering, and it does so inside a sandboxed iframe rather than in this
-	 * document.
+	 * Body rendering (US-G02) is **not** an either/or: the load can send an HTML body
+	 * (rendered by `EmailHtmlBody` in a sandboxed iframe), a plain-text body, or
+	 * both. Both happens when the HTML has no readable text of its own — a frame
+	 * whose content can't be vouched for is shown *with* the text beneath it, so a
+	 * message can never become unreachable because a tracking pixel talked the load
+	 * into preferring markup that renders blank. Neither happens only when there is
+	 * genuinely nothing to show, and then the "no body" line is the honest answer.
+	 *
+	 * Nothing in this file uses `{@html}` — stored markup is never injected into
+	 * *this* document, only into the sandboxed one.
 	 */
+	import EmailHtmlBody from './EmailHtmlBody.svelte';
+
 	// Deliberately narrower than the load's message shape: `id` is the `#each`
 	// key in the parent and nothing this component renders, and
 	// `svelte/no-unused-props` (correctly) rejects declaring a field a component
@@ -25,6 +33,8 @@
 			cc: string;
 			receivedAt: Date;
 			timestamp: string;
+			html: string | null;
+			blockedImageCount: number;
 			body: string;
 		};
 	}
@@ -69,18 +79,44 @@
 		</dl>
 	</header>
 
-	{#if message.body}
+	{#if message.html}
+		<EmailHtmlBody
+			html={message.html}
+			blockedImageCount={message.blockedImageCount}
+			title={`Message from ${message.sender}`}
+		/>
+	{/if}
+
+	<!--
+		Preformatted so the message's own line breaks survive (`whitespace-pre-wrap`
+		also wraps to the reading measure), in the app's sans face rather than the
+		monospace `<pre>` default because this is prose. `break-words` stops a long
+		unbroken URL from forcing horizontal scroll.
+	-->
+	{#if message.body && !message.html}
+		<pre
+			class="mt-3 max-w-[72ch] font-sans text-sm leading-relaxed break-words whitespace-pre-wrap text-text-primary">{message.body}</pre>
+	{:else if message.body}
 		<!--
-			`whitespace-pre-wrap` keeps the message's own line breaks (a plain-text
-			body is authored with them) while still wrapping to the reading measure;
-			`break-words` stops a long unbroken URL from forcing horizontal scroll.
+			Both bodies are present, which means the HTML has no readable text of its
+			own and the frame may be showing little or nothing. Collapsed and labelled
+			rather than concatenated: dumped straight under the frame it reads as the
+			same message twice, with nothing to tell a reader — or a screen reader —
+			which is which. Closed by default because the frame is usually the better
+			rendering; open is one click away when it isn't.
 		-->
-		<p
-			class="mt-3 max-w-[72ch] font-sans text-sm leading-relaxed break-words whitespace-pre-wrap text-text-primary"
-		>
-			{message.body}
-		</p>
-	{:else}
+		<details class="mt-3 max-w-[72ch]">
+			<summary
+				class="cursor-pointer font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent focus-visible:text-accent focus-visible:outline-none"
+			>
+				Plain-text version
+			</summary>
+			<pre
+				class="mt-2 font-sans text-sm leading-relaxed break-words whitespace-pre-wrap text-text-primary">{message.body}</pre>
+		</details>
+	{/if}
+
+	{#if !message.html && !message.body}
 		<p class="mt-3 font-sans text-sm text-text-muted italic">This message has no body.</p>
 	{/if}
 </article>

@@ -115,8 +115,16 @@ if (cleanup) {
 			toEmails: ['owner@example.com', 'ada@example.com'],
 			ccEmails: ['team@example.com'],
 			subject: `Re: ${STAMP} conversation`,
-			// HTML-only, to exercise the de-tagged rendering path.
-			bodyHtml: '<p>Second message, HTML only.</p><p>Second paragraph.</p>',
+			// HTML-only, to exercise the sandboxed-iframe rendering path (US-G02),
+			// with one remote image (blocked until "Load images") and one `data:`
+			// image (never blocked — the bytes are already here).
+			bodyHtml:
+				'<p>Second message, HTML only.</p><p>Second paragraph.</p>' +
+				'<p><img src="https://example.com/tracker.gif" alt="remote pixel" width="120" height="40"></p>' +
+				'<p><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAAAAAAALAAAAAABAAEAAAIBRAA7" alt="inline dot" width="24" height="24"></p>' +
+				// A link, to exercise the click interception: without it a click would
+				// navigate the frame itself and render a remote page inside the app.
+				'<p><a href="https://example.com/invoice">View invoice</a></p>',
 			isRead: false,
 			receivedAt: new Date(base + 180_000)
 		},

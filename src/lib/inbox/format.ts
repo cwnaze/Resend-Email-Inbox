@@ -23,6 +23,31 @@ function decodeBasicEntities(text: string): string {
 		.replace(/&amp;/gi, '&');
 }
 
+/**
+ * Matches one tag, well enough to de-tag into text. Not a parser, not a sanitizer.
+ *
+ * Deliberately the naive form. A version that skipped over quoted attribute
+ * values — so that a sender-controlled `>` inside an attribute
+ * (`<img src="x?d=1>2">`) could not end the tag early and leave `2">` behind as
+ * apparent text — turned out to backtrack catastrophically: on a body containing a
+ * run of bare `<` characters it went from 6ms to **15 seconds** at 4000 chars, and
+ * these helpers run for every row of the inbox list, so one such body would block
+ * the event loop and take the whole inbox down. The leak it fixed is now purely
+ * cosmetic (a stray `2">` in a snippet), because the decision that used to depend
+ * on it — whether a message's HTML has anything visible — is made in the DOM in
+ * `server/inbox/html.ts`. A denial of service is not worth a tidier snippet.
+ *
+ * This form is not unconditionally cheap either: it is quadratic in the length of
+ * a run of bare `<` characters (~11s for 200KB of them), because each one starts a
+ * scan to the end of the string. That is the behaviour this app has shipped since
+ * US-F01 and it is not reachable through the write path — DOMPurify escapes stray
+ * `<` to `&lt;` — so it is only a consideration for a body stored before the
+ * sanitizer existed. If that ever needs a bound, cap the *input length* here rather
+ * than making the pattern cleverer; the clever pattern is what caused the outage
+ * risk above.
+ */
+const HTML_TAG = /<[^>]*>/g;
+
 /** Removes tags whose *content* is not prose, along with the content itself. */
 function dropNonProseElements(html: string): string {
 	// `sanitizeEmailHtml` already forbids these, but a body stored before that
@@ -44,7 +69,7 @@ function stripHtml(html: string): string {
 		dropNonProseElements(html)
 			.replace(/<br\s*\/?>/gi, ' ')
 			.replace(/<\/(p|div|tr|li|h[1-6])>/gi, ' ')
-			.replace(/<[^>]*>/g, '')
+			.replace(HTML_TAG, '')
 	);
 }
 
@@ -124,7 +149,7 @@ export function htmlToPlainText(html: string): string {
 	const detagged = dropNonProseElements(html)
 		.replace(/<br\s*\/?>/gi, '\n')
 		.replace(/<\/(p|div|tr|li|h[1-6]|blockquote|table|section|article)\s*>/gi, '\n\n')
-		.replace(/<[^>]*>/g, '');
+		.replace(HTML_TAG, '');
 
 	return (
 		decodeBasicEntities(detagged)
