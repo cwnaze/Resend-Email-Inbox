@@ -22,14 +22,14 @@
 	import EmailHtmlBody from './EmailHtmlBody.svelte';
 	import AttachmentList from './AttachmentList.svelte';
 
-	// Deliberately narrower than the load's message shape: `id` is the `#each`
-	// key in the parent and nothing this component renders, and
-	// `svelte/no-unused-props` (correctly) rejects declaring a field a component
-	// doesn't use.
+	// Narrower than the load's message shape — `svelte/no-unused-props` (correctly)
+	// rejects declaring a field this component doesn't use. `id` is read as of
+	// US-G04: it is the delete form's `emailId`.
 	interface Props {
 		/** Passed straight through to `AttachmentList`, which needs it to build a download href. */
 		threadId: string;
 		message: {
+			id: string;
 			sender: string;
 			fromEmail: string;
 			to: string;
@@ -135,4 +135,31 @@
 	{#if message.attachments.length > 0}
 		<AttachmentList {threadId} attachments={message.attachments} />
 	{/if}
+
+	<!--
+		Delete (US-G04). A plain `method="POST"` form with no `use:enhance`: the
+		action re-runs the page load, so the message leaves the view either way, and
+		a delete that keeps working with JavaScript off is worth more here than
+		avoiding the reload. It is the message *id* that is posted, not its index —
+		an index would be silently wrong the moment two tabs disagree about the
+		thread. The action is deliberately below the body and the attachments: it acts
+		on the message above it, and it must not sit where a reader aiming for a link
+		can hit it.
+
+		`aria-label` names the message the button acts on, because a thread renders one
+		"Delete" per message and "Delete, button" ×3 is not a choice a screen-reader
+		user can make.
+	-->
+	<footer class="mt-4 flex justify-end">
+		<form method="POST" action="?/deleteMessage">
+			<input type="hidden" name="emailId" value={message.id} />
+			<button
+				type="submit"
+				aria-label={`Delete message from ${message.sender}`}
+				class="rounded-sm px-2 py-1 font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-danger focus-visible:text-danger focus-visible:outline-1 focus-visible:outline-danger"
+			>
+				Delete
+			</button>
+		</form>
+	</footer>
 </article>

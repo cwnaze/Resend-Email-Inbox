@@ -215,15 +215,93 @@ export async function markThreadRead(db: Database, threadId: string): Promise<vo
 			.set({ isRead: true })
 			.where(and(eq(emails.threadId, threadId), eq(emails.isRead, false)));
 
-		await tx
-			.update(threads)
-			.set({
-				isRead: sql`not exists (
-					select 1 from ${emails} ue
-					where ue.thread_id = ${threadId} and ue.is_read = 0 and ue.is_deleted = 0
-				)`
-			})
-			.where(eq(threads.id, threadId));
+		await recomputeThreadIsRead(tx, threadId);
+	});
+}
+
+/**
+ * Rewrites `threads.is_read` from the thread's emails: true exactly when no
+ * *visible* (non-deleted) email is unread.
+ *
+ * This is the single definition of that aggregate, shared by `markThreadRead`
+ * and `softDeleteThreadEmail` (US-G04) — both change the set of unread visible
+ * emails, and two copies of the `not exists` would be two things to keep in
+ * step. Always a recompute, never an assignment: see `markThreadRead`'s note
+ * for the interleaving that a blind `set({ isRead: true })` loses.
+ *
+ * Takes a `Database` like every other helper here, but callers are expected to
+ * pass a transaction handle — on its own this is only half of an update.
+ */
+async function recomputeThreadIsRead(db: Database, threadId: string): Promise<void> {
+	await db
+		.update(threads)
+		.set({
+			isRead: sql`not exists (
+				select 1 from ${emails} ue
+				where ue.thread_id = ${threadId} and ue.is_read = 0 and ue.is_deleted = 0
+			)`
+		})
+		.where(eq(threads.id, threadId));
+}
+
+export type SoftDeleteEmailResult = {
+	/** False when no email with that id belongs to this thread — the caller's 404. */
+	found: boolean;
+	/** How many non-deleted emails the thread has left; 0 means nothing left to render. */
+	visibleRemaining: number;
+};
+
+/**
+ * Soft-deletes one email of a thread (US-G04, FR-4): sets `is_deleted = true`,
+ * never removes the row. v1 has no hard delete anywhere (Data Model PRD FR-3),
+ * so the message leaves every view — `listThreadEmails`, `listInboxThreads`'
+ * inner join, the attachment download lookup — while the bytes stay.
+ *
+ * `threadId` is part of the update's `where`, not just the lookup: the id comes
+ * from a form field on a page addressed by thread, and holding an email id is
+ * not permission to delete it through some other thread's URL. A mismatch is
+ * the same `found: false` as an unknown id, so a probe can't tell them apart.
+ *
+ * Deleting is **idempotent**: an email that is already deleted still reports
+ * `found: true`, because the alternative is a double-submitted form (or a
+ * back-then-resubmit) answering 404 for a message the owner did successfully
+ * delete.
+ *
+ * Everything runs in one transaction, and the two follow-ups are the reason:
+ *
+ * - `threads.is_read` is recomputed, because a deleted email stops counting
+ *   toward it. Deleting the one unread message of a thread has to leave the
+ *   thread read, or the inbox shows an unread dot with no visible message
+ *   behind it — the mirror of the case `markThreadRead` guards.
+ * - `visibleRemaining` is counted here rather than re-queried by the caller, so
+ *   the "was that the last one?" answer comes from the same snapshot as the
+ *   delete. `threads.last_message_at` is deliberately left alone: it is the
+ *   inbox sort key, and a thread with no visible email is dropped by the list's
+ *   inner join rather than sorted, so nothing reads a stale value.
+ */
+export async function softDeleteThreadEmail(
+	db: Database,
+	threadId: string,
+	emailId: string
+): Promise<SoftDeleteEmailResult> {
+	return db.transaction(async (tx) => {
+		const [target] = await tx
+			.select({ id: emails.id })
+			.from(emails)
+			.where(and(eq(emails.id, emailId), eq(emails.threadId, threadId)))
+			.limit(1);
+		if (!target) return { found: false, visibleRemaining: 0 };
+
+		await tx.update(emails).set({ isDeleted: true }).where(eq(emails.id, emailId));
+
+		await recomputeThreadIsRead(tx, threadId);
+
+		const [remaining] = await tx
+			.select({ count: sql<number>`count(*)` })
+			.from(emails)
+			.where(and(eq(emails.threadId, threadId), eq(emails.isDeleted, false)));
+
+		return { found: true, visibleRemaining: remaining?.count ?? 0 };
 	});
 }
 
