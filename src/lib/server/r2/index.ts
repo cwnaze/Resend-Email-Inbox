@@ -96,21 +96,16 @@ export type SignedDownloadUrlOptions = {
  */
 export async function getR2SignedDownloadUrl(
 	key: string,
-	options: SignedDownloadUrlOptions | number = {}
+	options: SignedDownloadUrlOptions = {}
 ): Promise<string> {
-	// The second parameter used to be a bare `expiresInSeconds` number; accept
-	// both so existing callers keep working.
-	const resolved: SignedDownloadUrlOptions =
-		typeof options === 'number' ? { expiresInSeconds: options } : options;
-
 	const command = new GetObjectCommand({
 		Bucket: bucketName,
 		Key: key,
-		ResponseContentDisposition: resolved.contentDisposition,
-		ResponseContentType: resolved.contentType
+		ResponseContentDisposition: options.contentDisposition,
+		ResponseContentType: options.contentType
 	});
 
 	return getSignedUrl(client, command, {
-		expiresIn: resolved.expiresInSeconds ?? DEFAULT_SIGNED_URL_EXPIRY_SECONDS
+		expiresIn: options.expiresInSeconds ?? DEFAULT_SIGNED_URL_EXPIRY_SECONDS
 	});
 }
