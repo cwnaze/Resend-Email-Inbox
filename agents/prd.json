@@ -406,8 +406,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 27,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Screen + validation only; nothing is sent (US-H02). Pure rule in src/lib/compose/addresses.ts is shared by the Send gate and the send action's server-side re-check; the action validates the session itself and echoes the draft back on every failure path (US-H02 FR-4)."
     },
     {
       "id": "US-H02",

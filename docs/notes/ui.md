@@ -13,6 +13,8 @@
 ## App shell
 
 - `src/routes/(app)/+layout.svelte` is the real app shell (US-J02): a top bar (app mark, search input, `POST /api/auth/logout` form) above a flexible pane rendering `{@render children()}`, with no horizontal scroll down to 375px. US-J02 also gave it a fixed `w-[360px]` left column (`hidden lg:flex`) as a placeholder for the thread list; **US-F01 removed that column** — a thread list belongs to the inbox subtree, not to every `(app)` route (`/contacts` in US-I01 would have inherited one beside it). If the list/detail split is ever built, it belongs in `inbox/+layout.svelte` rather than back in the shell — US-G01 deliberately deferred it (see the thread-view section).
+- US-H01 added a **Compose** link to the shell's top bar (accent-bordered, before the logout form). It belongs in the shell — unlike the search box and the thread list, which were pushed down into the inbox subtree — because writing a new message is not part of the inbox list's state and every `(app)` route should offer it from the same place. See `docs/notes/compose.md`.
+- The shell's logout button is the **first `form` and first `button[type=submit]` in the document**, so a page-level check must scope its selectors (the compose form carries `id="compose-form"` for exactly this reason).
 - **Any internal `<a href="/...">` (or programmatic navigation) must wrap the path in `resolve(...)` from `$app/paths`** (e.g. `href={resolve('/inbox')}`), not a raw string — this kit version's `svelte/no-navigation-without-resolve` lint rule fails `npm run lint` otherwise. Apply this to every new internal link across the app, not just the shell.
 
 ## Shared components

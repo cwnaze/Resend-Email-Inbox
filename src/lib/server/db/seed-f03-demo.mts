@@ -12,7 +12,7 @@ import { drizzle } from 'drizzle-orm/libsql';
 import { eq, like } from 'drizzle-orm';
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import * as schema from './schema.js';
-import { attachments, authCodes, emails, threads } from './schema.js';
+import { attachments, authCodes, contacts, emails, threads } from './schema.js';
 import { hashAuthCode } from '../auth/auth-codes.js';
 
 const STAMP = 'f03-demo';
@@ -72,6 +72,20 @@ const DEMO_FILES = [
 
 const objectKey = (index: number) => `inbound/${STAMP}/file-${index}`;
 
+/**
+ * Contacts for the US-H01 compose autocomplete. All on one throwaway domain so
+ * the cleanup can find them by address and can't touch a real correspondent.
+ *
+ * One with no name (an auto-created contact that only ever sent a bare address),
+ * and two sharing a name fragment, so a demo can show both that the list
+ * narrows and that an address-prefix match sorts ahead of a name match.
+ */
+const DEMO_CONTACTS = [
+	{ email: `casey@${STAMP}.example`, name: 'Casey Demo' },
+	{ email: `dana@${STAMP}.example`, name: 'Dana Casey' },
+	{ email: `luca@${STAMP}.example`, name: null }
+];
+
 const cleanup = process.argv.includes('--cleanup');
 // US-G01: soft-deletes every message in the seeded conversation, so the demo can
 // show the "thread with no visible messages" 404 without hand-editing rows.
@@ -95,6 +109,9 @@ async function removeSeededRows() {
 	await db.delete(emails).where(like(emails.messageId, `<${STAMP}%`));
 	await db.delete(threads).where(like(threads.subject, `${STAMP}%`));
 	await db.delete(authCodes).where(eq(authCodes.codeHash, hashAuthCode('123456')));
+	// No FK points at `contacts`, so ordering doesn't matter here — but the
+	// pattern must: only the seeded domain, never a real correspondent's row.
+	await db.delete(contacts).where(like(contacts.email, `%@${STAMP}.example`));
 }
 
 if (cleanup) {
@@ -237,6 +254,16 @@ if (cleanup) {
 			// Fixed, ascending, so the rendered order is the same on every run —
 			// `listAttachmentsForEmails` orders by `created_at`.
 			createdAt: new Date(base + index * 1000)
+		}))
+	);
+
+	// US-H01: the compose screen's recipient autocomplete reads `contacts`.
+	await db.insert(contacts).values(
+		DEMO_CONTACTS.map((contact, index) => ({
+			...contact,
+			autoCreated: true,
+			createdAt: new Date(base + index * 1000),
+			updatedAt: new Date(base + index * 1000)
 		}))
 	);
 
