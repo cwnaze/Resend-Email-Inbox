@@ -612,6 +612,12 @@ check(
 	unicodeName.includes('filename="rapport-caf_.pdf"'),
 	unicodeName
 );
+const extValue = attachmentContentDisposition("report'(final)*.pdf");
+check(
+	'percent-encodes the ext-value chars encodeURIComponent misses',
+	extValue.includes("filename*=UTF-8''report%27%28final%29%2A.pdf"),
+	extValue
+);
 const injected = attachmentContentDisposition('a"; x=y\r\nX-Evil: 1.txt');
 check('escapes a quote that would end the parameter', !/[^*]="a"/.test(injected), injected);
 check('strips CR/LF from the quoted form', !/[\r\n]/.test(injected), injected);

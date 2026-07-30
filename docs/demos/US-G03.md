@@ -52,6 +52,7 @@ attachmentContentDisposition
   ok   is never inline, whatever the name
   ok   percent-encodes a non-ASCII name in filename*
   ok   falls back to an ASCII-only quoted filename for clients that ignore filename*
+  ok   percent-encodes the ext-value chars encodeURIComponent misses
   ok   escapes a quote that would end the parameter
   ok   strips CR/LF from the quoted form
   ok   never yields an empty filename
@@ -72,7 +73,7 @@ attachment queries — live DB
   ok   misses when the attachment belongs to another thread
   ok   misses when the attachment’s email is soft-deleted
   ok   misses on an unknown attachment id
-196/196 checks passed
+197/197 checks passed
 ```
 
 The end-to-end download, against a real dev server and the real R2 bucket. The seeder puts three tiny objects in the bucket and attaches two to the conversation's first message and one to its **soft-deleted** third — the last exists precisely to prove it stays unreachable. Row ids are looked up rather than pasted, and the presigned URL is reduced to its shape (host, `X-Amz-Expires`, signature present) because the signature and date change on every run.
@@ -113,6 +114,7 @@ curl -s -c /tmp/g03-jar.txt -X POST "http://localhost:$PORT/api/auth/verify-code
 	-H 'content-type: application/json' -d '{"code":"123456"}' -o /dev/null
 echo "signed in, endpoint answers: $(curl -s -b /tmp/g03-jar.txt -o /dev/null -w '%{http_code}' "http://localhost:$PORT/inbox/$THREAD/attachments/$OK")"
 LOC=$(curl -s -b /tmp/g03-jar.txt -o /dev/null -w '%{redirect_url}' "http://localhost:$PORT/inbox/$THREAD/attachments/$OK")
+echo "not cacheable:              $(curl -s -b /tmp/g03-jar.txt -o /dev/null -D - "http://localhost:$PORT/inbox/$THREAD/attachments/$OK" | grep -i '^cache-control' | tr -d '\r')"
 echo "redirect host:              $(echo "$LOC" | sed -E 's#https://[^.]+\.[^.]+\.(r2\.cloudflarestorage\.com)/.*#\1#')"
 echo "signed, short-lived:        $(echo "$LOC" | grep -o 'X-Amz-Expires=[0-9]*'), signature present: $(echo "$LOC" | grep -c 'X-Amz-Signature=')"
 echo "R2 answers with:            $(curl -sL -b /tmp/g03-jar.txt -D - -o /tmp/g03-body.txt "http://localhost:$PORT/inbox/$THREAD/attachments/$OK" | grep -i '^content-disposition' | tr -d '\r')"
@@ -124,6 +126,7 @@ echo "attachment under the wrong thread: $(curl -s -b /tmp/g03-jar.txt -o /dev/n
 ```output
 unauthenticated:            401
 signed in, endpoint answers: 302
+not cacheable:              cache-control: no-store
 redirect host:              r2.cloudflarestorage.com
 signed, short-lived:        X-Amz-Expires=60, signature present: 1
 R2 answers with:            Content-Disposition: attachment; filename="notes.txt"; filename*=UTF-8''notes.txt
@@ -185,4 +188,4 @@ clicking a row downloads rather than navigating:      true
 ![The conversation's first message with its two attachments listed below the body](docs/demos/us-g03-attachment-list.png)
 ```
 
-![The conversation's first message with its two attachments listed below the body](0496c8ce-2026-07-29.png)
+![The conversation's first message with its two attachments listed below the body](506d0105-2026-07-30.png)

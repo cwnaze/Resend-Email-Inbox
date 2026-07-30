@@ -14,7 +14,7 @@
 // the time the reader clicked it, with nothing to explain why. Minting on demand
 // also means a URL is only ever created for a file someone actually asked for,
 // so a thread of twenty attachments costs zero signatures to render.
-import { error, redirect } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import { getThreadAttachment } from '$lib/server/db/attachments';
@@ -59,7 +59,16 @@ export const GET: RequestHandler = async ({ params, cookies }) => {
 		contentType: downloadContentType(attachment.contentType)
 	});
 
-	// 302, not 301: the target is single-use and expires in a minute, so it must
-	// never be cached by the browser or by anything between here and it.
-	redirect(302, url);
+	// 302, not 301, and `no-store` rather than trusting the default. A 302 is not
+	// heuristically cacheable, but "not cacheable by default" is a weaker promise
+	// than this response needs: the `Location` carries a live signature, and a copy
+	// held by the browser's back/forward cache or by anything in between would be a
+	// replayable download link. Returned directly rather than via `redirect()`,
+	// which throws and so cannot carry a header. `cookies.set` from
+	// `validateSession`'s sliding refresh is still applied by SvelteKit to whatever
+	// response this handler returns.
+	return new Response(null, {
+		status: 302,
+		headers: { location: url, 'cache-control': 'no-store' }
+	});
 };

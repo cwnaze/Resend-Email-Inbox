@@ -22,15 +22,16 @@ export async function insertAttachment(db: Database, values: NewAttachment): Pro
 	return row;
 }
 
+/**
+ * One email's attachments. Delegates to `listAttachmentsForEmails` so the two
+ * cannot drift apart on ordering — this one used to order by `createdAt` alone,
+ * which left a same-millisecond pair free to swap between calls.
+ */
 export async function getAttachmentsByEmailId(
 	db: Database,
 	emailId: string
 ): Promise<Attachment[]> {
-	return db
-		.select()
-		.from(attachments)
-		.where(eq(attachments.emailId, emailId))
-		.orderBy(asc(attachments.createdAt));
+	return listAttachmentsForEmails(db, [emailId]);
 }
 
 /**

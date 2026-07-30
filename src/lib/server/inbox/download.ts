@@ -53,9 +53,17 @@ function quotedFilename(filename: string): string {
  */
 export function attachmentContentDisposition(filename: string): string {
 	const ascii = quotedFilename(filename);
-	// `encodeURIComponent` leaves `!'()*` unescaped; they are legal in ext-value
-	// so that is fine, and it escapes everything a header cares about.
-	const encoded = encodeURIComponent(filename.replace(/[\r\n]/g, '')) || 'attachment';
+	// `encodeURIComponent` alone is NOT enough here. It leaves `!'()*` unescaped,
+	// and of those only `!` is an RFC 8187 `attr-char` — `'` in particular is the
+	// ext-value's own delimiter, so a filename like `report'(final).pdf` would emit
+	// `filename*=UTF-8''report'(final).pdf` and a strict parser can split it at the
+	// wrong quote. Percent-encode the four it misses so the ext-value contains only
+	// attr-chars and `%`.
+	const encoded =
+		encodeURIComponent(filename.replace(/[\r\n]/g, '')).replace(
+			/['()*]/g,
+			(char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+		) || 'attachment';
 	return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
