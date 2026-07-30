@@ -4,17 +4,24 @@
 // choke point for this route group — so there is deliberately no second session
 // check here.
 //
-// Opening a thread is also what marks it read (US-F02). That is deliberately a
-// side effect in a GET load, which is why the list rows opt out of hover
-// preloading (`data-sveltekit-preload-data="tap"` in `ThreadRow.svelte`): with
-// the app-wide `hover` default, merely moving the pointer across the list would
-// run this load and mark threads read the owner never opened. US-G04 owns the
-// mark-read-on-view criterion formally; if it moves the mutation to a form
-// action, that opt-out can go away.
-import { error } from '@sveltejs/kit';
-import type { PageServerLoad } from './$types';
+// Opening a thread is also what marks it read (US-F02, and US-G04's first
+// criterion). That is deliberately a side effect in a GET load — "the page was
+// loaded" is the exact event the criterion names, and there is no user gesture
+// to hang a POST on — which is why the list rows opt out of hover preloading
+// (`data-sveltekit-preload-data="tap"` in `ThreadRow.svelte`): with the app-wide
+// `hover` default, merely moving the pointer across the list would run this load
+// and mark threads read the owner never opened. Keep that opt-out as long as the
+// mutation lives here.
+import { error, redirect } from '@sveltejs/kit';
+import { resolve } from '$app/paths';
+import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
-import { getThreadById, listThreadEmails, markThreadRead } from '$lib/server/db/emails';
+import {
+	getThreadById,
+	listThreadEmails,
+	markThreadRead,
+	softDeleteThreadEmail
+} from '$lib/server/db/emails';
 import { listAttachmentsForEmails } from '$lib/server/db/attachments';
 import {
 	absoluteTime,
@@ -24,6 +31,7 @@ import {
 	senderLabel
 } from '$lib/inbox/format';
 import { prepareEmailHtml } from '$lib/server/inbox/html';
+import { validateSession } from '$lib/server/auth/session';
 
 export const load: PageServerLoad = async ({ params }) => {
 	const thread = await getThreadById(db, params.threadId);
@@ -143,3 +151,50 @@ export const load: PageServerLoad = async ({ params }) => {
 		})
 	};
 };
+
+export const actions = {
+	/**
+	 * Soft-deletes one message of this thread (US-G04, FR-4).
+	 *
+	 * A form action, not a `+server.ts` endpoint or a link: it mutates, so it has
+	 * to be a POST, and as an action it works with no JavaScript and re-runs this
+	 * page's `load` on the way out — which is what makes the message disappear
+	 * from the view without a second "remove it from the list" code path that
+	 * could disagree with `listThreadEmails` about what is visible.
+	 *
+	 * **This action validates the session itself.** `(app)/+layout.server.ts` is
+	 * the group's choke point for *rendering*, but SvelteKit runs an action
+	 * **before** any `load`, so a POST here would have already deleted the
+	 * message by the time the layout redirected an anonymous caller to `/login`.
+	 * Same trap as the attachment `+server.ts` (see `docs/notes/auth.md`), same
+	 * fix, and the same rule for anything mutating added under `(app)/` later.
+	 * 401 rather than a redirect: this is a form submit against a known thread,
+	 * and answering it with a login page pretending the delete happened would be
+	 * worse than refusing.
+	 */
+	deleteMessage: async ({ cookies, params, request }) => {
+		const session = await validateSession(db, cookies);
+		if (!session) error(401, 'Not authenticated');
+
+		const form = await request.formData();
+		const emailId = form.get('emailId');
+		if (typeof emailId !== 'string' || emailId === '') error(400, 'Missing message id');
+
+		// `threadId` goes into the query, so this can only ever delete a message of
+		// the thread whose URL was posted to.
+		const result = await softDeleteThreadEmail(db, params.threadId, emailId);
+		if (!result.found) error(404, 'Message not found');
+
+		// Both branches redirect (303, so the browser re-issues a GET) rather than
+		// returning data, which is what keeps a refresh from re-posting the delete
+		// and keeps `?/deleteMessage` out of the address bar — this form is
+		// deliberately not `use:enhance`d, so without the redirect the action's own
+		// POST URL is what the reader is left sitting on.
+		//
+		// An emptied thread goes to the list, not back to itself: `load` rejects a
+		// thread with no visible messages, so returning here would bounce the owner
+		// off a 404 boundary for a delete that succeeded.
+		if (result.visibleRemaining === 0) redirect(303, resolve('/(app)/inbox'));
+		redirect(303, resolve('/(app)/inbox/[threadId]', { threadId: params.threadId }));
+	}
+} satisfies Actions;

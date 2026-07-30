@@ -16,7 +16,12 @@ import { eq, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { attachments, emails, threads } from './schema.js';
 import type { Database } from './types.js';
-import { getThreadById, listThreadEmails, markThreadRead } from './emails.js';
+import {
+	getThreadById,
+	listThreadEmails,
+	markThreadRead,
+	softDeleteThreadEmail
+} from './emails.js';
 import { getThreadAttachment, listAttachmentsForEmails } from './attachments.js';
 import { attachmentContentDisposition, downloadContentType } from '../inbox/download.js';
 import { inboxSearchLikePattern, listInboxThreads } from './inbox.js';
@@ -1071,6 +1076,125 @@ try {
 		'misses on an unknown attachment id',
 		await getThreadAttachment(db, multi.id, `${stamp}-missing`),
 		undefined
+	);
+
+	// -------------------------------------------------------------------------
+	// softDeleteThreadEmail (US-G04)
+	// -------------------------------------------------------------------------
+
+	console.log('softDeleteThreadEmail — live DB');
+
+	// The `older` thread holds two visible emails at this point: its original one
+	// and `arrived`, both marked read by the section above.
+	equal(
+		'the thread under test starts with two visible messages',
+		(await listThreadEmails(db, older.id)).length,
+		2
+	);
+
+	equal(
+		'reports not-found for an unknown email id',
+		await softDeleteThreadEmail(db, older.id, `${stamp}-missing`),
+		{ found: false, visibleRemaining: 0 }
+	);
+	// Holding an email id is not permission to delete it through another thread's
+	// URL — the thread id is part of the update's `where`, so this must miss *and*
+	// leave the email alone.
+	equal(
+		'reports not-found when the email belongs to another thread',
+		await softDeleteThreadEmail(db, older.id, visibleMulti.id),
+		{ found: false, visibleRemaining: 0 }
+	);
+	equal(
+		'a cross-thread attempt does not delete the email',
+		(await db.select().from(emails).where(eq(emails.id, visibleMulti.id)))[0].isDeleted,
+		false
+	);
+
+	// An unread message deleted must not leave the thread pinned unread: there
+	// would be no visible message on screen to explain the inbox's unread dot.
+	const [unreadPest] = await db
+		.insert(emails)
+		.values([
+			{
+				threadId: older.id,
+				messageId: `<${stamp}-older-3@invalid>`,
+				direction: 'inbound' as const,
+				fromEmail: 'pest@example.com',
+				toEmails: ['owner@example.com'],
+				subject: 'Unread and unwanted',
+				isRead: false,
+				receivedAt: at(31)
+			}
+		])
+		.returning();
+	emailIds.push(unreadPest.id);
+	await db.update(threads).set({ isRead: false }).where(eq(threads.id, older.id));
+	const pestDeleted = await softDeleteThreadEmail(db, older.id, unreadPest.id);
+	equal('deleting the unread message leaves the other two visible', pestDeleted, {
+		found: true,
+		visibleRemaining: 2
+	});
+	equal(
+		'recomputes the thread flag to read once the unread message is gone',
+		(await getThreadById(db, older.id))!.isRead,
+		true
+	);
+
+	const [pestRow] = await db.select().from(emails).where(eq(emails.id, unreadPest.id));
+	check(
+		'soft delete sets is_deleted without destroying the row',
+		pestRow !== undefined && pestRow.isDeleted && pestRow.subject === 'Unread and unwanted',
+		pestRow
+	);
+	check(
+		'the deleted message is gone from listThreadEmails',
+		!(await listThreadEmails(db, older.id)).some((row) => row.id === unreadPest.id)
+	);
+	// A double-submitted form must not answer 404 for a message that really was
+	// deleted.
+	equal(
+		'deleting an already-deleted message is idempotent',
+		await softDeleteThreadEmail(db, older.id, unreadPest.id),
+		{
+			found: true,
+			visibleRemaining: 2
+		}
+	);
+
+	// Down to the last visible message: `visibleRemaining` is what tells the action
+	// to send the owner back to `/inbox` instead of a thread that now 404s.
+	const [first, second] = await listThreadEmails(db, older.id);
+	equal(
+		'deleting one of two leaves one visible',
+		await softDeleteThreadEmail(db, older.id, first.id),
+		{
+			found: true,
+			visibleRemaining: 1
+		}
+	);
+	equal(
+		'deleting the last visible message reports none remaining',
+		await softDeleteThreadEmail(db, older.id, second.id),
+		{
+			found: true,
+			visibleRemaining: 0
+		}
+	);
+	equal(
+		'the emptied thread has no visible messages left',
+		await listThreadEmails(db, older.id),
+		[]
+	);
+	// Same rule as the inner join: a thread with no visible email is not a thread
+	// the inbox lists.
+	check(
+		'the emptied thread drops out of listInboxThreads',
+		!(await listInboxThreads(db)).some((row) => row.threadId === older.id)
+	);
+	check(
+		'the thread row itself is not destroyed',
+		(await getThreadById(db, older.id)) !== undefined
 	);
 } finally {
 	if (attachmentIds.length > 0) {
