@@ -37,7 +37,7 @@
 
 	<div class="flex flex-col">
 		{#each data.messages as message (message.id)}
-			<ThreadMessage {message} />
+			<ThreadMessage threadId={data.threadId} {message} />
 		{/each}
 	</div>
 </section>

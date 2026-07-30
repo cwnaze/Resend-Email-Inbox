@@ -375,8 +375,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 25,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Attachments render below each message's body (filename + decimal-unit size), one query for the whole thread. Download is GET /inbox/[threadId]/attachments/[attachmentId]: it checks the session itself (a layout load does NOT run for a +server.ts request \u2014 see CLAUDE.md's cross-cutting rules), resolves the attachment scoped to its thread AND to a non-deleted email, presigns a 60s R2 GET with a signed Content-Disposition/Content-Type, and 302s the browser to R2 so the bytes never pass through the function. Presigning is per click, never in the load \u2014 a URL minted at page load is dead by the time a tab that sat open gets clicked. filename and content_type are sender-controlled columns going into headers, so server/inbox/download.ts escapes them (RFC 6266 both-forms, always `attachment`, type collapsed to octet-stream unless a bare type/subtype). AttachmentList needs data-sveltekit-reload (the route has no page component) and must build its own href with resolve() (the lint rule rejects a pre-built one from the load), which is why threadId is back in the load's payload."
     },
     {
       "id": "US-G04",

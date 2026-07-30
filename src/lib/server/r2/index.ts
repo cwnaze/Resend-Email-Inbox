@@ -72,18 +72,40 @@ export async function deleteFromR2(key: string): Promise<void> {
 	);
 }
 
+export type SignedDownloadUrlOptions = {
+	expiresInSeconds?: number;
+	/**
+	 * `Content-Disposition` for R2 to answer with, overriding whatever the stored
+	 * object carries. Must already be a complete, correctly-escaped header value
+	 * (see `server/inbox/download.ts`).
+	 */
+	contentDisposition?: string;
+	/** `Content-Type` for R2 to answer with, overriding the stored object's. */
+	contentType?: string;
+};
+
 /**
  * Generates a time-limited presigned GET URL for an object key, so the
  * browser can fetch/download a private-bucket object directly from R2.
+ *
+ * The two response overrides are signed query parameters (S3's
+ * `response-content-disposition` / `response-content-type`), so they are part of
+ * the signature and cannot be tampered with by whoever holds the URL — which is
+ * what lets a download link set the filename the browser saves under without
+ * the stored object having to carry it.
  */
 export async function getR2SignedDownloadUrl(
 	key: string,
-	expiresInSeconds: number = DEFAULT_SIGNED_URL_EXPIRY_SECONDS
+	options: SignedDownloadUrlOptions = {}
 ): Promise<string> {
 	const command = new GetObjectCommand({
 		Bucket: bucketName,
-		Key: key
+		Key: key,
+		ResponseContentDisposition: options.contentDisposition,
+		ResponseContentType: options.contentType
 	});
 
-	return getSignedUrl(client, command, { expiresIn: expiresInSeconds });
+	return getSignedUrl(client, command, {
+		expiresIn: options.expiresInSeconds ?? DEFAULT_SIGNED_URL_EXPIRY_SECONDS
+	});
 }

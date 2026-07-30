@@ -14,15 +14,18 @@ import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { eq, inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
-import { emails, threads } from './schema.js';
+import { attachments, emails, threads } from './schema.js';
 import type { Database } from './types.js';
 import { getThreadById, listThreadEmails, markThreadRead } from './emails.js';
+import { getThreadAttachment, listAttachmentsForEmails } from './attachments.js';
+import { attachmentContentDisposition, downloadContentType } from '../inbox/download.js';
 import { inboxSearchLikePattern, listInboxThreads } from './inbox.js';
 import {
 	absoluteTime,
 	addressListLabel,
 	bodyPlainText,
 	bodySnippet,
+	formatFileSize,
 	htmlToPlainText,
 	relativeTime,
 	senderLabel
@@ -560,6 +563,86 @@ equal(
 );
 
 // ---------------------------------------------------------------------------
+// Pure: formatFileSize (US-G03)
+// ---------------------------------------------------------------------------
+
+console.log('formatFileSize');
+equal('renders whole bytes with no decimal', formatFileSize(512), '512 B');
+equal('switches to KB at 1000 bytes (decimal units)', formatFileSize(1000), '1 KB');
+equal('keeps one decimal place', formatFileSize(24_100), '24.1 KB');
+equal('trims a trailing .0', formatFileSize(2_000_000), '2 MB');
+equal('scales to MB', formatFileSize(1_500_000), '1.5 MB');
+equal('scales to GB', formatFileSize(3_200_000_000), '3.2 GB');
+// Absurd on purpose: the point is that the unit index stops at `TB` and renders a
+// large number, rather than walking off the array and rendering `undefined`.
+equal(
+	'clamps at the largest unit rather than running off the array',
+	formatFileSize(1e18),
+	'1000000 TB'
+);
+equal('renders a zero-byte attachment honestly', formatFileSize(0), '0 B');
+// Guards, not expected inputs: `size_bytes` is written from the bytes actually
+// downloaded. A `NaN` reaching a message header would render "NaN undefined".
+equal('never renders NaN', formatFileSize(Number.NaN), '0 B');
+equal('never renders a negative size', formatFileSize(-5), '0 B');
+equal('never renders Infinity', formatFileSize(Number.POSITIVE_INFINITY), '0 B');
+
+// ---------------------------------------------------------------------------
+// Pure: download headers (US-G03)
+// ---------------------------------------------------------------------------
+
+console.log('attachmentContentDisposition');
+equal(
+	'forces a download and emits both filename forms',
+	attachmentContentDisposition('invoice.pdf'),
+	`attachment; filename="invoice.pdf"; filename*=UTF-8''invoice.pdf`
+);
+check(
+	'is never inline, whatever the name',
+	attachmentContentDisposition('page.html').startsWith('attachment;')
+);
+const unicodeName = attachmentContentDisposition('rapport-café.pdf');
+check(
+	'percent-encodes a non-ASCII name in filename*',
+	unicodeName.includes("filename*=UTF-8''rapport-caf%C3%A9.pdf"),
+	unicodeName
+);
+check(
+	'falls back to an ASCII-only quoted filename for clients that ignore filename*',
+	unicodeName.includes('filename="rapport-caf_.pdf"'),
+	unicodeName
+);
+const extValue = attachmentContentDisposition("report'(final)*.pdf");
+check(
+	'percent-encodes the ext-value chars encodeURIComponent misses',
+	extValue.includes("filename*=UTF-8''report%27%28final%29%2A.pdf"),
+	extValue
+);
+const injected = attachmentContentDisposition('a"; x=y\r\nX-Evil: 1.txt');
+check('escapes a quote that would end the parameter', !/[^*]="a"/.test(injected), injected);
+check('strips CR/LF from the quoted form', !/[\r\n]/.test(injected), injected);
+equal(
+	'never yields an empty filename',
+	attachmentContentDisposition(''),
+	`attachment; filename="attachment"; filename*=UTF-8''attachment`
+);
+
+console.log('downloadContentType');
+equal('passes a plain type through', downloadContentType('application/pdf'), 'application/pdf');
+equal('lowercases and trims', downloadContentType('  IMAGE/PNG '), 'image/png');
+equal(
+	'rejects a type carrying parameters',
+	downloadContentType('text/html; charset=utf-8'),
+	'application/octet-stream'
+);
+equal(
+	'rejects a header-injecting type',
+	downloadContentType('text/plain\r\nX-Evil: 1'),
+	'application/octet-stream'
+);
+equal('rejects an empty type', downloadContentType(''), 'application/octet-stream');
+
+// ---------------------------------------------------------------------------
 // listInboxThreads against the live DB
 // ---------------------------------------------------------------------------
 
@@ -578,6 +661,9 @@ const db = drizzle(client, { schema }) as unknown as Database;
 const stamp = `inbox-list-verify-${process.pid}`;
 const threadIds: string[] = [];
 const emailIds: string[] = [];
+// Deleted first in the `finally`: the remote Turso connection enforces the FKs,
+// so an attachment row outlives no email row.
+const attachmentIds: string[] = [];
 
 /** A distinct base time well in the past so seeded rows can't outrank real mail. */
 const base = new Date('2020-01-01T00:00:00.000Z').getTime();
@@ -900,7 +986,96 @@ try {
 		await getThreadById(db, `${stamp}-missing`),
 		undefined
 	);
+
+	// -------------------------------------------------------------------------
+	// listAttachmentsForEmails / getThreadAttachment against the live DB (US-G03)
+	// -------------------------------------------------------------------------
+
+	console.log('attachment queries — live DB');
+	const visibleMulti = (await listThreadEmails(db, multi.id))[0];
+	// `hiddenUnread` above is the multi thread's soft-deleted-and-unread email —
+	// exactly the row an attachment must become unreachable through.
+	const [firstFile, secondFile, deletedFile] = await db
+		.insert(attachments)
+		.values([
+			{
+				emailId: visibleMulti.id,
+				filename: 'invoice.pdf',
+				contentType: 'application/pdf',
+				sizeBytes: 24_100,
+				r2ObjectKey: `inbound/${stamp}/one-invoice.pdf`,
+				createdAt: at(0)
+			},
+			{
+				emailId: visibleMulti.id,
+				filename: 'photo.jpg',
+				contentType: 'image/jpeg',
+				sizeBytes: 1_500_000,
+				r2ObjectKey: `inbound/${stamp}/two-photo.jpg`,
+				createdAt: at(1)
+			},
+			{
+				emailId: hiddenUnread.id,
+				filename: 'hidden.txt',
+				contentType: 'text/plain',
+				sizeBytes: 12,
+				r2ObjectKey: `inbound/${stamp}/three-hidden.txt`,
+				createdAt: at(2)
+			}
+		])
+		.returning();
+	attachmentIds.push(firstFile.id, secondFile.id, deletedFile.id);
+
+	const forVisible = await listAttachmentsForEmails(db, [visibleMulti.id]);
+	equal(
+		'returns a message’s attachments in insertion order',
+		forVisible.map((row) => row.filename),
+		['invoice.pdf', 'photo.jpg']
+	);
+	// The read path never sees the storage key, but the query does — the download
+	// endpoint is the only thing allowed to resolve it.
+	equal(
+		'carries the R2 object key, not a URL',
+		forVisible[0].r2ObjectKey.startsWith('inbound/'),
+		true
+	);
+	const forBoth = await listAttachmentsForEmails(db, [visibleMulti.id, hiddenUnread.id]);
+	equal(
+		'one query covers every email id it is handed',
+		forBoth.filter((row) => attachmentIds.includes(row.id)).length,
+		3
+	);
+	equal('returns nothing for an empty id list', await listAttachmentsForEmails(db, []), []);
+	equal(
+		'returns nothing for an email with no attachments',
+		await listAttachmentsForEmails(db, [older.id]),
+		[]
+	);
+
+	const scoped = await getThreadAttachment(db, multi.id, firstFile.id);
+	equal('finds an attachment scoped to its own thread', scoped?.filename, 'invoice.pdf');
+	equal('exposes the object key the endpoint presigns', scoped?.r2ObjectKey, firstFile.r2ObjectKey);
+	// The whole point of scoping the lookup: holding an attachment id is not
+	// authorization to fetch it through *any* thread's URL.
+	equal(
+		'misses when the attachment belongs to another thread',
+		await getThreadAttachment(db, older.id, firstFile.id),
+		undefined
+	);
+	equal(
+		'misses when the attachment’s email is soft-deleted',
+		await getThreadAttachment(db, multi.id, deletedFile.id),
+		undefined
+	);
+	equal(
+		'misses on an unknown attachment id',
+		await getThreadAttachment(db, multi.id, `${stamp}-missing`),
+		undefined
+	);
 } finally {
+	if (attachmentIds.length > 0) {
+		await db.delete(attachments).where(inArray(attachments.id, attachmentIds));
+	}
 	if (emailIds.length > 0) {
 		await db.delete(emails).where(inArray(emails.id, emailIds));
 	}

@@ -15,7 +15,14 @@ import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { getThreadById, listThreadEmails, markThreadRead } from '$lib/server/db/emails';
-import { absoluteTime, addressListLabel, bodyPlainText, senderLabel } from '$lib/inbox/format';
+import { listAttachmentsForEmails } from '$lib/server/db/attachments';
+import {
+	absoluteTime,
+	addressListLabel,
+	bodyPlainText,
+	formatFileSize,
+	senderLabel
+} from '$lib/inbox/format';
 import { prepareEmailHtml } from '$lib/server/inbox/html';
 
 export const load: PageServerLoad = async ({ params }) => {
@@ -30,6 +37,26 @@ export const load: PageServerLoad = async ({ params }) => {
 	// and it happens *before* `markThreadRead` so a thread with nothing to show
 	// isn't silently mutated by a failed navigation.
 	if (messages.length === 0) error(404, 'Thread not found');
+
+	// Attachments for every message in one query (US-G03), grouped here rather
+	// than fetched per message: one round trip against a remote Turso database
+	// instead of one per message. `r2_object_key` is deliberately **not** carried
+	// into the returned shape — the key is an internal storage detail, and the
+	// browser needs only the attachment id to hit the download endpoint, which
+	// looks the key up server-side.
+	const attachmentsByEmailId = new Map<string, { id: string; filename: string; size: string }[]>();
+	for (const attachment of await listAttachmentsForEmails(
+		db,
+		messages.map((message) => message.id)
+	)) {
+		const list = attachmentsByEmailId.get(attachment.emailId) ?? [];
+		list.push({
+			id: attachment.id,
+			filename: attachment.filename,
+			size: formatFileSize(attachment.sizeBytes)
+		});
+		attachmentsByEmailId.set(attachment.emailId, list);
+	}
 
 	await markThreadRead(db, params.threadId);
 
@@ -61,9 +88,12 @@ export const load: PageServerLoad = async ({ params }) => {
 	// image, and its text part is a "view in browser" stub, so demanding text would
 	// throw the real message away just as badly.
 	//
-	// No `threadId` here: it existed only for the placeholder page's debug line,
-	// and `params.threadId` is what any later story should read anyway.
+	// `threadId` is back in the payload as of US-G03, for a different reason than
+	// the placeholder page's old debug line: `AttachmentList` builds each download
+	// href with `resolve('/(app)/inbox/[threadId]/attachments/[attachmentId]', …)`,
+	// which needs the thread id at render time.
 	return {
+		threadId: params.threadId,
 		subject: newest.subject,
 		messages: messages.map((message) => {
 			const prepared = prepareEmailHtml(message.bodyHtml);
@@ -107,7 +137,8 @@ export const load: PageServerLoad = async ({ params }) => {
 				timestamp: absoluteTime(message.receivedAt),
 				html: showFrame ? prepared!.html : null,
 				blockedImageCount: showFrame ? prepared!.blockedImageCount : 0,
-				body: showText ? text : ''
+				body: showText ? text : '',
+				attachments: attachmentsByEmailId.get(message.id) ?? []
 			};
 		})
 	};
