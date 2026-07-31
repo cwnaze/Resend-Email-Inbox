@@ -78,15 +78,6 @@
 	}
 
 	/**
-	 * Marks the *edited* field touched, not the whole form.
-	 *
-	 * One delegated handler rather than one per control (and rather than a
-	 * callback prop threaded into `RecipientField`), keyed off the submitted field
-	 * name the inputs already carry. Marking everything touched on any keystroke
-	 * is what made typing the first character of an address pop up a complaint
-	 * about the missing subject.
-	 */
-	/**
 	 * Where the form POSTs — `?/send`, plus `replyTo` when this is a reply.
 	 *
 	 * The parameter rides in the **action URL**, not in a hidden input, because a
@@ -102,6 +93,15 @@
 		data.reply ? `?/send&replyTo=${encodeURIComponent(data.reply.emailId)}` : '?/send'
 	);
 
+	/**
+	 * Marks the *edited* field touched, not the whole form.
+	 *
+	 * One delegated handler rather than one per control (and rather than a
+	 * callback prop threaded into `RecipientField`), keyed off the submitted field
+	 * name the inputs already carry. Marking everything touched on any keystroke
+	 * is what made typing the first character of an address pop up a complaint
+	 * about the missing subject.
+	 */
 	function onFormInput(event: Event) {
 		const name = (event.target as HTMLElement & { name?: string }).name;
 		if (name === 'to' || name === 'cc') touched[name] = true;
