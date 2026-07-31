@@ -58,6 +58,28 @@ export async function getEmailByMessageId(
 	return row;
 }
 
+/**
+ * One visible email by its primary key — the message a reply is answering
+ * (US-H03).
+ *
+ * Soft-deleted rows are excluded, matching `listThreadEmails`'s definition of
+ * "visible": the reply link is rendered from that list, so a `?replyTo=` id
+ * naming a deleted message can only come from a stale tab, and quoting a
+ * message the owner has already removed from the thread would resurrect its
+ * text into a new send.
+ */
+export async function getVisibleEmailById(
+	db: Database,
+	emailId: string
+): Promise<Email | undefined> {
+	const [row] = await db
+		.select()
+		.from(emails)
+		.where(and(eq(emails.id, emailId), eq(emails.isDeleted, false)))
+		.limit(1);
+	return row;
+}
+
 export async function getThreadById(db: Database, threadId: string): Promise<Thread | undefined> {
 	const [row] = await db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
 	return row;

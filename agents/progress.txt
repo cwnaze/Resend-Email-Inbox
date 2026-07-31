@@ -571,3 +571,22 @@ Reviewed the diff and re-exercised the feature; seven things were actually wrong
 Reviewed the diff and re-exercised the feature. One real bug, found by asking what the *validation rule* allows that the *provider* doesn't:
 - **A subject-only send failed with a bare "Sending failed".** `validateComposeDraft` accepts "a subject **or** a body", but Resend answers `422 Missing \`html\` or \`text\` field` for `text: ''`. `sendOutboundEmail` now substitutes a single space on the wire (measured: `' '` and `'\n'` are both accepted) while `emails.body_text` keeps the original empty string, so the thread view still renders its "no body" line. Verified in the browser: a subject-only draft now reports Sent, and the stored row's `body_text` is `''`.
 - **Learning:** the gate and the provider are two different validators. Every combination the local rule *permits* is worth one probe against the real API — the compose rule's "subject or body" branch had never been sent, and it was the only branch that was broken.
+
+## 2026-07-31 - US-H03
+- Implemented "Reply pre-fills context and threading headers": a Reply link on every message in the thread view opens /compose pre-filled (To = the original's sender, Subject = one `Re:`, the original quoted below), and the send it produces lands in the parent's thread with `In-Reply-To` set.
+- Files changed:
+  - `src/lib/compose/reply.ts` (new, pure): `replySubject`, `quoteOriginal`, `replyBody`, `replyRecipients`.
+  - `src/lib/server/db/emails.ts`: `getVisibleEmailById` (excludes soft-deleted).
+  - `src/routes/(app)/compose/+page.server.ts`: `loadReplyTarget`/`replyDraft`; the load reads `?replyTo=`, the action re-reads it from `url.searchParams` and passes `parent.threadId` + `parent.messageId` to the send and the store.
+  - `src/routes/(app)/compose/+page.svelte`: seeds from `data.reply.draft`, `Reply` heading/title/back-link, and the form's action URL carries `replyTo`.
+  - `src/routes/(app)/inbox/[threadId]/ThreadMessage.svelte`: the Reply link.
+  - `verify-compose-addresses.mts` (+19 checks, 65 total) and `verify-outbound-send.mts` (+3, 32 total).
+  - `docs/demos/US-H03.md`, `docs/notes/compose.md`, `docs/notes/thread-view.md`, `CLAUDE.md`, `agents/prd.json`.
+- **Learnings for future iterations:**
+  - **A form `action="?/name"` replaces the page's entire query string.** This was a real bug caught only by driving the browser: posting a reply to a bare `?/send` lands the failed submit on `/compose?/send` with no `replyTo`, so the page silently stops being a reply and the retry would open a new thread. Any route whose behaviour depends on a search param must repeat it in the action URL (`?/send&replyTo=...`). Typecheck and lint cannot see this.
+  - `resolve()` has no query-string form. `svelte/no-navigation-without-resolve` also accepts an `href` whose *type* is `ResolvedPathname` (`$app/types`), which is the sanctioned way to append a query to a resolved path — see `ThreadMessage.svelte`'s `replyHref`.
+  - `rodney input <sel> <text>` **replaces** an input's value rather than typing at the caret; to prepend to a pre-filled textarea, assign `.value` via `rodney js`. A native (non-`enhance`d) form POSTs the DOM value, so this still submits what you set even though Svelte's state is untouched.
+  - `rodney click` on a link returns before navigation settles even after `waitload`; re-read `rodney url` (or `sleep 1`) before asserting on the new page.
+  - The demo thread's messages are seeded with fixed dates, which is what makes a quoted attribution line (`On Dec 31, 2019, 7:03 PM, …`) reproducible under `showboat verify`. Do not assert on anything derived from `new Date()`.
+  - Sending real mail to an apex address loops the delivered copy back in through the **production** inbound webhook seconds later, and that row references the seeded thread — so `seed-f03-demo.mts --cleanup` fails on the FK unless the copy is swept first. A demo that sends must sweep its own rows at the *start* as well as the end to stay re-runnable.
+---

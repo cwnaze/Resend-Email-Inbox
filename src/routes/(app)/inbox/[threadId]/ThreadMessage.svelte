@@ -19,6 +19,8 @@
 	 * Nothing in this file uses `{@html}` — stored markup is never injected into
 	 * *this* document, only into the sandboxed one.
 	 */
+	import { resolve } from '$app/paths';
+	import type { ResolvedPathname } from '$app/types';
 	import EmailHtmlBody from './EmailHtmlBody.svelte';
 	import AttachmentList from './AttachmentList.svelte';
 
@@ -47,6 +49,17 @@
 
 	// Only worth a second line when the display name isn't already the address.
 	const showAddress = $derived(message.sender !== message.fromEmail);
+
+	// The reply link's href (US-H03). Built here rather than inline because
+	// `resolve()` has no query-string form and `svelte/no-navigation-without-resolve`
+	// only accepts either a bare `resolve(...)` call or a value already typed as
+	// `ResolvedPathname` — the rule's own sanctioned shape for a path that has been
+	// resolved and then decorated. The path itself still goes through `resolve`,
+	// which is what the repo rule is actually protecting; only the query is
+	// appended, and the id is percent-encoded on the way in.
+	const replyHref = $derived(
+		`${resolve('/(app)/compose')}?replyTo=${encodeURIComponent(message.id)}` as ResolvedPathname
+	);
 </script>
 
 <article class="border-b border-border px-4 py-5 last:border-b-0 sm:px-6">
@@ -150,7 +163,23 @@
 		"Delete" per message and "Delete, button" ×3 is not a choice a screen-reader
 		user can make.
 	-->
-	<footer class="mt-4 flex justify-end">
+	<footer class="mt-4 flex justify-end gap-1">
+		<!--
+			Reply (US-H03). A plain GET link, not a form: opening the compose screen
+			pre-filled changes nothing, so it must be safe to prefetch, bookmark and
+			middle-click. The *only* thing it carries is this message's id — compose
+			re-reads the recipient, subject, quoted text and thread from the row.
+
+			`aria-label` names the message for the same reason Delete's does: a thread
+			renders one of each per message.
+		-->
+		<a
+			href={replyHref}
+			aria-label={`Reply to message from ${message.sender}`}
+			class="rounded-sm px-2 py-1 font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent focus-visible:text-accent focus-visible:outline-1 focus-visible:outline-accent"
+		>
+			Reply
+		</a>
 		<form method="POST" action="?/deleteMessage">
 			<input type="hidden" name="emailId" value={message.id} />
 			<button

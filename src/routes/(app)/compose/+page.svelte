@@ -38,7 +38,16 @@
 	// after a successful send hands the owner a loaded form whose only obvious
 	// gesture is Send again. Failure keeps the draft (that is the point of FR-4);
 	// success clears it.
-	const seed = untrack(() => (form?.sent ? undefined : form?.draft));
+	//
+	// A reply (US-H03) seeds from `data.reply.draft` instead — but only when the
+	// action has nothing to say. The precedence matters in both directions: a
+	// rejected submit must re-render what was *typed* (an echoed draft outranks the
+	// pre-fill, or editing a reply and getting it refused would silently restore
+	// the original recipient), and a successful send must clear the fields even
+	// though `?replyTo=` is still in the URL and the load is still handing back a
+	// pre-fill (or a sent reply leaves a fully loaded form whose only obvious
+	// gesture is to send it again).
+	const seed = untrack(() => (form ? (form.sent ? undefined : form.draft) : data.reply?.draft));
 	let to = $state(seed?.to ?? '');
 	let cc = $state(seed?.cc ?? '');
 	let subject = $state(seed?.subject ?? '');
@@ -69,6 +78,22 @@
 	}
 
 	/**
+	 * Where the form POSTs — `?/send`, plus `replyTo` when this is a reply.
+	 *
+	 * The parameter rides in the **action URL**, not in a hidden input, because a
+	 * form action's query *replaces* the page's: posting to a bare `?/send` lands
+	 * on `/compose?/send` with no `replyTo`, so the page that renders a rejected
+	 * send would re-render as an ordinary new message — same fields, but the next
+	 * Send would start a new thread instead of continuing the conversation, and
+	 * nothing on screen would say so. Carrying it here keeps the reply a reply
+	 * across a retry, and keeps the *load* and the *action* reading the id from the
+	 * same place (`url.searchParams`) rather than from two sources that can differ.
+	 */
+	const replyAction = $derived(
+		data.reply ? `?/send&replyTo=${encodeURIComponent(data.reply.emailId)}` : '?/send'
+	);
+
+	/**
 	 * Marks the *edited* field touched, not the whole form.
 	 *
 	 * One delegated handler rather than one per control (and rather than a
@@ -85,18 +110,30 @@
 </script>
 
 <svelte:head>
-	<title>Compose — dusk inbox</title>
+	<title>{data.reply ? 'Reply' : 'Compose'} — dusk inbox</title>
 </svelte:head>
 
 <section class="mx-auto flex w-full max-w-3xl flex-col">
 	<header class="border-b border-border px-4 py-4 sm:px-6">
-		<a
-			href={resolve('/(app)/inbox')}
-			class="font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent"
-		>
-			← Inbox
-		</a>
-		<h1 class="mt-2 text-base font-semibold text-text-primary">New message</h1>
+		<!-- A reply goes back where it was started from, not to the list. -->
+		{#if data.reply}
+			<a
+				href={resolve('/(app)/inbox/[threadId]', { threadId: data.reply.threadId })}
+				class="font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent"
+			>
+				← Thread
+			</a>
+		{:else}
+			<a
+				href={resolve('/(app)/inbox')}
+				class="font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent"
+			>
+				← Inbox
+			</a>
+		{/if}
+		<h1 class="mt-2 text-base font-semibold text-text-primary">
+			{data.reply ? 'Reply' : 'New message'}
+		</h1>
 	</header>
 
 	<!--
@@ -108,7 +145,7 @@
 	<form
 		id="compose-form"
 		method="POST"
-		action="?/send"
+		action={replyAction}
 		class="flex flex-col gap-4 px-4 py-4 sm:px-6"
 		novalidate
 		oninput={onFormInput}

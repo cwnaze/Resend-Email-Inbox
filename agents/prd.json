@@ -436,8 +436,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 29,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Reply is a GET link carrying only `?replyTo=<email id>`; recipient, subject, quote, threadId and In-Reply-To are all re-read from that row in the load and again in the action (never round-tripped through a form field). The id rides in the form action URL (`?/send&replyTo=...`) because a form action query replaces the page's -- a bare `?/send` turns a rejected reply back into a new message. Threading is `storeSentEmail(parent.threadId)`, the half that cannot fail; In-Reply-To is best-effort per US-H02. Pure text shaping lives in `lib/compose/reply.ts` -- US-H04 should reuse its SUBJECT_PREFIX/quoteOriginal for `Fwd:`."
     },
     {
       "id": "US-H04",
