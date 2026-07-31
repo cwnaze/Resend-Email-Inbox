@@ -27,8 +27,8 @@ type ComposeResult = {
 	/** Always echoed, so no failure path can lose typed content (FR-4). */
 	draft: ComposeDraft;
 	errors?: ComposeValidation['errors'];
-	/** US-H01 only: the draft passed validation but nothing was sent. */
-	notImplemented?: boolean;
+	/** The draft passed validation. US-H01 sends nothing, so this is all it means. */
+	accepted?: boolean;
 	/** A whole-form failure, as opposed to a per-field validation message. */
 	error?: string;
 };
@@ -59,6 +59,14 @@ export const actions = {
 	 * send call: the page renders from `form?.draft ?? ''`, so a failed submit
 	 * re-renders what was typed.
 	 *
+	 * One honest limit on that: the **401** path's draft only reaches a caller that
+	 * skips the loads (an `x-sveltekit-action` fetch). For an ordinary form POST,
+	 * SvelteKit runs the page's `load` chain after the action, and
+	 * `(app)/+layout.server.ts` redirects a session-less request to `/login` — that
+	 * redirect wins and the returned draft is dropped. Preserving a draft across an
+	 * expired session needs client-side storage, which is not this story; what
+	 * matters here is that the refusal happens *before* anything is sent.
+	 *
 	 * **The session is validated here, in the action.** `(app)/+layout.server.ts`
 	 * protects page renders, and SvelteKit runs an action *before* any `load`, so
 	 * a POST would otherwise run its whole body before the layout ever redirected
@@ -86,6 +94,6 @@ export const actions = {
 			return fail(400, { draft, errors: validation.errors } satisfies ComposeResult);
 		}
 
-		return { draft, notImplemented: true } satisfies ComposeResult;
+		return { draft, accepted: true } satisfies ComposeResult;
 	}
 } satisfies Actions;

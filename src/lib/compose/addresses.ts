@@ -17,13 +17,48 @@
 export const MAX_CONTACT_SUGGESTIONS = 6;
 
 /**
- * One recipient field's worth of text, split into addresses.
+ * The offsets of the `,`/`;` characters that actually separate entries.
  *
  * Both `,` and `;` separate: a pasted list from another mail client can use
- * either, and neither is legal inside the address subset accepted below, so
- * treating both as separators can't split a valid address in half.
+ * either. But a separator **inside a quoted display name or inside angle
+ * brackets does not separate** — `"Doe, Jane" <jane@x.com>` is the single most
+ * common shape a copy-paste out of another mail client produces, and splitting
+ * it on its comma left `"Doe` behind as a permanently invalid address that
+ * disabled Send with no way to fix it but retyping.
+ *
+ * One scan shared by the splitter and by the caret logic, so "where does this
+ * entry end" has one answer everywhere.
  */
-const ADDRESS_SEPARATORS = /[,;]/;
+function separatorIndices(value: string): number[] {
+	const indices: number[] = [];
+	let quoted = false;
+	let angled = false;
+	for (let i = 0; i < value.length; i += 1) {
+		const char = value[i];
+		if (char === '"' && !angled) {
+			quoted = !quoted;
+		} else if (!quoted && char === '<') {
+			angled = true;
+		} else if (!quoted && char === '>') {
+			angled = false;
+		} else if (!quoted && !angled && (char === ',' || char === ';')) {
+			indices.push(i);
+		}
+	}
+	return indices;
+}
+
+/** Splits a recipient field's text on its top-level separators only. */
+function splitEntries(value: string): string[] {
+	const entries: string[] = [];
+	let start = 0;
+	for (const index of separatorIndices(value)) {
+		entries.push(value.slice(start, index));
+		start = index + 1;
+	}
+	entries.push(value.slice(start));
+	return entries;
+}
 
 /**
  * A single address, in the conservative subset described above: a local part of
@@ -80,7 +115,7 @@ export function parseAddressList(value: string): ParsedAddressList {
 	const seen = new Set<string>();
 	const invalid: string[] = [];
 
-	for (const entry of value.split(ADDRESS_SEPARATORS)) {
+	for (const entry of splitEntries(value)) {
 		const candidate = extractAddress(entry);
 		if (candidate === '') continue;
 
@@ -108,6 +143,14 @@ export type ComposeDraft = {
 export type ComposeValidation = {
 	/** True when this draft may be sent. */
 	valid: boolean;
+	/**
+	 * The parsed recipients, so the send path doesn't parse a second time.
+	 *
+	 * Populated whether or not the draft is valid (an invalid To still yields
+	 * whatever addresses did parse); only read them when `valid` is true.
+	 */
+	to: string[];
+	cc: string[];
 	/** Field-keyed messages, absent when that field has nothing wrong with it. */
 	errors: Partial<Record<'to' | 'cc' | 'content', string>>;
 };
@@ -136,15 +179,23 @@ export function validateComposeDraft(draft: ComposeDraft): ComposeValidation {
 		errors.to = 'Add at least one recipient.';
 	}
 
+	// Cross-field duplicates matter as much as within-field ones: `parseAddressList`
+	// de-duplicates each field on its own, so the same person in both To and Cc
+	// would otherwise pass and be delivered to twice by one send.
+	const ccOnly = cc.addresses.filter((address) => !to.addresses.includes(address));
+	const duplicated = cc.addresses.filter((address) => to.addresses.includes(address));
+
 	if (cc.invalid.length > 0) {
 		errors.cc = `Not a valid address: ${cc.invalid.join(', ')}`;
+	} else if (duplicated.length > 0) {
+		errors.cc = `Already in To: ${duplicated.join(', ')}`;
 	}
 
 	if (draft.subject.trim() === '' && draft.body.trim() === '') {
 		errors.content = 'Add a subject or a message body.';
 	}
 
-	return { valid: Object.keys(errors).length === 0, errors };
+	return { valid: Object.keys(errors).length === 0, to: to.addresses, cc: ccOnly, errors };
 }
 
 export type ContactSuggestion = {
@@ -165,20 +216,14 @@ export function activeEntry(
 	caret: number
 ): { text: string; start: number; end: number } {
 	const clamped = Math.max(0, Math.min(caret, value.length));
-	let start = 0;
-	for (let i = clamped - 1; i >= 0; i -= 1) {
-		if (ADDRESS_SEPARATORS.test(value[i])) {
-			start = i + 1;
-			break;
-		}
-	}
-	let end = value.length;
-	for (let i = clamped; i < value.length; i += 1) {
-		if (ADDRESS_SEPARATORS.test(value[i])) {
-			end = i;
-			break;
-		}
-	}
+	const separators = separatorIndices(value);
+	// The nearest separator on each side of the caret — the same top-level scan
+	// the splitter uses, so a comma inside `"Doe, Jane" <…>` doesn't look like an
+	// entry boundary here either.
+	const before = separators.filter((index) => index < clamped);
+	const after = separators.filter((index) => index >= clamped);
+	const start = before.length === 0 ? 0 : before[before.length - 1] + 1;
+	const end = after.length === 0 ? value.length : after[0];
 	return { text: value.slice(start, end), start, end };
 }
 

@@ -40,7 +40,7 @@
 		-->
 		<a
 			href={resolve('/(app)/compose')}
-			class="ml-auto shrink-0 rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:outline-none"
+			class="ml-auto shrink-0 rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:border-text-primary focus-visible:outline-none"
 		>
 			Compose
 		</a>

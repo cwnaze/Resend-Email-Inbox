@@ -16,8 +16,10 @@
 	 * reports honestly rather than pretending mail went out.
 	 */
 	import { untrack } from 'svelte';
+	import { browser } from '$app/environment';
 	import { resolve } from '$app/paths';
 	import RecipientField from './RecipientField.svelte';
+	import ErrorMessage from '$lib/components/ErrorMessage.svelte';
 	import { validateComposeDraft } from '$lib/compose/addresses';
 	import type { ActionData, PageData } from './$types';
 
@@ -94,8 +96,9 @@
 
 	<!--
 		A real `method="POST"` form at the action, not a JS-only handler: the
-		disabled button is a convenience, and `validateComposeDraft` running again
-		in the action is what actually enforces the rule.
+		disabled button is a convenience for a browser running our code, and
+		`validateComposeDraft` running again in the action is what actually enforces
+		the rule (see the button's own comment for how no-JS keeps working).
 	-->
 	<form
 		id="compose-form"
@@ -149,7 +152,7 @@
 				type="text"
 				bind:value={subject}
 				autocomplete="off"
-				class="w-full rounded border border-border bg-surface px-2.5 py-1.5 font-mono text-sm text-text-primary transition-colors duration-fast ease-standard placeholder:text-text-muted focus:border-accent focus:outline-none"
+				class="w-full rounded border border-border bg-surface px-2.5 py-1.5 text-sm text-text-primary transition-colors duration-fast ease-standard placeholder:text-text-muted focus:border-accent focus:outline-none"
 			/>
 		</div>
 
@@ -166,37 +169,40 @@
 		</div>
 
 		{#if showError('content')}
-			<p role="alert" class="font-mono text-xs text-danger">{validation.errors.content}</p>
+			<p role="alert" class="font-sans text-sm text-danger">{validation.errors.content}</p>
 		{/if}
 
 		<div class="flex items-center gap-3 border-t border-border pt-4">
 			<!--
-				Really `disabled`, not just styled: the criterion is that validation gates
-				*allowing* send, and an enabled button that silently does nothing is a
-				worse answer to a keyboard or screen-reader user than one that reports
-				itself unavailable. The reason it is unavailable is in the messages above
-				it and in the summary beside it, so this is never a dead end.
+				`disabled` only in the browser (`browser && !valid`). Server-rendered,
+				the draft is empty and therefore invalid, so an unconditional `disabled`
+				ships a button that a browser with no JavaScript can never re-enable — the
+				action, and the server-side re-validation that is the real enforcement,
+				would be unreachable. With this, no-JS submits and gets the action's own
+				validation messages back; with JS the button reports itself unavailable
+				rather than accepting a click it would only refuse.
 			-->
 			<button
 				type="submit"
-				disabled={!validation.valid}
-				class="rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:outline-none disabled:cursor-not-allowed disabled:border-border disabled:bg-surface disabled:text-text-muted"
+				disabled={browser && !validation.valid}
+				class="rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:border-text-primary focus-visible:outline-none disabled:cursor-not-allowed disabled:border-border disabled:bg-surface disabled:text-text-muted"
 			>
 				Send
 			</button>
 
 			{#if !validation.valid}
-				<p class="font-mono text-xs text-text-muted">Needs a recipient and a subject or message.</p>
+				<p class="font-sans text-sm text-text-muted">Needs a recipient and a subject or message.</p>
 			{/if}
 		</div>
 
-		{#if form?.notImplemented}
-			<p role="status" class="font-mono text-xs text-text-muted">
-				Draft accepted — sending is not wired up yet (US-H02).
+		{#if form?.accepted}
+			<p role="status" class="font-sans text-sm text-text-muted">
+				Nothing was sent. This screen can compose and check a message, but delivery isn’t connected
+				yet — the draft above is exactly what was submitted.
 			</p>
 		{/if}
 		{#if form?.error}
-			<p role="alert" class="font-mono text-xs text-danger">{form.error}</p>
+			<ErrorMessage message={form.error} />
 		{/if}
 	</form>
 </section>

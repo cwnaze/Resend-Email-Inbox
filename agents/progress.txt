@@ -537,3 +537,16 @@
   - **An open suggestion popup is absolutely positioned over the control beneath it**, so a click there hits the suggestion, not the control. Move focus off the field first — real behaviour, not a test artifact.
   - `rodney js` chokes on some deeply nested quoting inside `$( )`; assign the expression to a shell variable and interpolate it instead of escaping through two layers.
 ---
+
+### US-H01 review fixes (same branch)
+Reviewed the diff and re-exercised the feature; seven things were actually wrong, all fixed and re-verified in the browser:
+- **A pasted `"Last, First" <addr>` recipient list was unusable.** Splitting on `/[,;]/` cut the quoted display name in half, leaving `"Last` as a permanently invalid entry that disabled Send. Replaced with a `separatorIndices` scan that ignores separators inside quotes and angle brackets, shared by the splitter *and* the caret helpers.
+- **The Send button's `disabled` was server-rendered**, so a no-JS client could never submit and the action's server-side validation — the actual enforcement — was unreachable. Now `browser && !valid`.
+- **Mouse hover set the keyboard's active option and Tab took it**, so resting the pointer over the popup meant Tab inserted a contact instead of leaving the field (and a screen reader announced an option nobody navigated to). Hover is styling only; Tab is left alone; Enter still takes a keyboard-highlighted option.
+- **`onfocus` opened the popup**, but Tabbing into a field selects its whole value → `selectionStart === 0` → suggestions aimed at the *first* address in the list. Focus no longer opens it.
+- **The same address in To and Cc validated fine** (each field de-duplicates alone), which in US-H02 is one person delivered to twice. `validateComposeDraft` now rejects it, and returns the parsed `to`/`cc` arrays so the send path doesn't parse a second time.
+- Convention fixes: dropped the `shadow-lg` on the popup (`prd-ui-ux.md` forbids drop shadows — this was the only one in `src/`), moved prose messages and the Subject field from `font-mono` to sans, reused `ErrorMessage` for the whole-form failure, and gave the Compose link and Send button a visible `focus-visible:` substitute for the outline they suppress.
+- Corrected an untrue claim rather than the code: the action's `fail(401)` echo only reaches an `x-sveltekit-action` fetch — after a real form POST the layout `load` redirects a session-less request to `/login` and the draft is dropped. Noted in `+page.server.ts` and `docs/notes/auth.md`.
+- Verify script is now 46 checks (added the quoted-comma paste, the To/Cc duplicate, the returned recipient arrays, and the caret scan).
+- **Process learning (Casey, twice):** review the **diff** and do a **functional** review — never fan out a deep multi-agent review. The 8-angle pass I ran here burned the session limit and mostly returned opinions about code outside the story.
+---

@@ -91,53 +91,77 @@ check('order of first appearance is preserved', parseAddressList('z@x.com, a@x.c
 	addresses: ['z@x.com', 'a@x.com'],
 	invalid: []
 });
+// The shape a copy-paste out of another mail client produces. Splitting on the
+// comma inside the quoted display name used to leave `"Doe` behind as a
+// permanently invalid entry, which disabled Send with no way out but retyping.
+check(
+	'a comma inside a quoted display name does not separate',
+	parseAddressList('"Doe, Jane" <jane@x.com>, bob@x.com'),
+	{ addresses: ['jane@x.com', 'bob@x.com'], invalid: [] }
+);
+check(
+	'a semicolon inside angle brackets does not separate',
+	parseAddressList('Jane <jane;odd@x.com>'),
+	{ addresses: [], invalid: ['jane;odd@x.com'] }
+);
 
 console.log('validateComposeDraft');
 const base = { to: '', cc: '', subject: '', body: '' };
 check('an empty draft is not sendable', validateComposeDraft(base), {
 	valid: false,
+	to: [],
+	cc: [],
 	errors: { to: 'Add at least one recipient.', content: 'Add a subject or a message body.' }
 });
 check(
+	'a valid draft hands back the parsed recipients, so the send path need not re-parse',
+	validateComposeDraft({
+		to: 'A@x.com, a@x.com; Bo <bo@x.com>',
+		cc: 'cc@x.com',
+		subject: 'hi',
+		body: ''
+	}),
+	{ valid: true, to: ['a@x.com', 'bo@x.com'], cc: ['cc@x.com'], errors: {} }
+);
+check(
+	'the same address in To and Cc is refused, not delivered twice',
+	validateComposeDraft({ ...base, to: 'a@x.com', cc: 'A@x.com', subject: 'hi' }),
+	{ valid: false, to: ['a@x.com'], cc: [], errors: { cc: 'Already in To: a@x.com' } }
+);
+check(
 	'recipient + subject is sendable',
 	validateComposeDraft({ ...base, to: 'a@x.com', subject: 'hi' }),
-	{
-		valid: true,
-		errors: {}
-	}
+	{ valid: true, to: ['a@x.com'], cc: [], errors: {} }
 );
 check(
 	'recipient + body only is sendable',
 	validateComposeDraft({ ...base, to: 'a@x.com', body: 'hi' }),
-	{
-		valid: true,
-		errors: {}
-	}
+	{ valid: true, to: ['a@x.com'], cc: [], errors: {} }
 );
 check(
 	'a body of only whitespace is no body',
 	validateComposeDraft({ ...base, to: 'a@x.com', body: '   \n  ' }),
-	{ valid: false, errors: { content: 'Add a subject or a message body.' } }
+	{ valid: false, to: ['a@x.com'], cc: [], errors: { content: 'Add a subject or a message body.' } }
 );
 check(
 	'content without a recipient is not sendable',
 	validateComposeDraft({ ...base, subject: 'hi' }),
-	{ valid: false, errors: { to: 'Add at least one recipient.' } }
+	{ valid: false, to: [], cc: [], errors: { to: 'Add at least one recipient.' } }
 );
 check(
 	'a malformed To blocks send and names the offender',
 	validateComposeDraft({ ...base, to: 'a@x.com, oops', subject: 'hi' }),
-	{ valid: false, errors: { to: 'Not a valid address: oops' } }
+	{ valid: false, to: ['a@x.com'], cc: [], errors: { to: 'Not a valid address: oops' } }
 );
 check(
 	'an empty Cc is fine (Cc is optional)',
 	validateComposeDraft({ ...base, to: 'a@x.com', cc: '', subject: 'hi' }),
-	{ valid: true, errors: {} }
+	{ valid: true, to: ['a@x.com'], cc: [], errors: {} }
 );
 check(
 	'a malformed Cc blocks send',
 	validateComposeDraft({ ...base, to: 'a@x.com', cc: 'nope', subject: 'hi' }),
-	{ valid: false, errors: { cc: 'Not a valid address: nope' } }
+	{ valid: false, to: ['a@x.com'], cc: [], errors: { cc: 'Not a valid address: nope' } }
 );
 
 console.log('activeEntry');
@@ -156,6 +180,16 @@ check('an out-of-range caret is clamped, not thrown', activeEntry('a@x.com', 999
 	start: 0,
 	end: 7
 });
+
+check(
+	'the caret scan ignores a comma inside a quoted name',
+	activeEntry('"Doe, Jane" <j@x.com>', 21),
+	{
+		text: '"Doe, Jane" <j@x.com>',
+		start: 0,
+		end: 21
+	}
+);
 
 console.log('replaceActiveEntry');
 check(

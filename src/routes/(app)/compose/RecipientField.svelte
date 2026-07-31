@@ -54,6 +54,11 @@
 	// so clicking into an earlier address has to re-target the suggestions.
 	let caret = $state(0);
 	let open = $state(false);
+	// The keyboard's highlighted option. Hover is deliberately **not** written
+	// here: with hover driving it, resting the pointer over the popup (which opens
+	// right where the pointer already is) made Enter take a suggestion the reader
+	// never navigated to, and announced it as the active option to a screen reader.
+	// Hover styling is `hover:` in the class list instead.
 	let activeIndex = $state(-1);
 
 	const entry = $derived(activeEntry(value, caret));
@@ -76,6 +81,12 @@
 		caret = input?.selectionStart ?? value.length;
 	}
 
+	/** Closes the popup and drops the highlight, which only means anything while open. */
+	function close() {
+		open = false;
+		activeIndex = -1;
+	}
+
 	function onInput() {
 		syncCaret();
 		open = true;
@@ -85,8 +96,7 @@
 	function choose(contact: ContactSuggestion) {
 		const next = replaceActiveEntry(value, caret, contact.email);
 		value = next.value;
-		open = false;
-		activeIndex = -1;
+		close();
 		// The caret has to be placed after Svelte has written the new value to the
 		// DOM, or the browser puts it wherever the old value left it.
 		const element = input;
@@ -103,8 +113,7 @@
 		if (event.key === 'Escape') {
 			// Doesn't clear the field — Escape closes the popup, and a keystroke that
 			// discarded typed addresses would be a data-loss trap.
-			open = false;
-			activeIndex = -1;
+			close();
 			return;
 		}
 
@@ -118,12 +127,16 @@
 			return;
 		}
 
-		if ((event.key === 'Enter' || event.key === 'Tab') && activeIndex >= 0) {
-			// Only when a suggestion is highlighted: otherwise Enter must keep its
-			// normal submit behaviour and Tab must keep moving focus.
+		if (event.key === 'Enter' && activeIndex >= 0) {
+			// Only when a suggestion was highlighted *with the keyboard*: otherwise
+			// Enter must keep its normal submit behaviour.
 			event.preventDefault();
 			choose(suggestions[activeIndex]);
 		}
+
+		// Tab deliberately does **not** take the highlighted suggestion. Tab is how a
+		// keyboard user leaves a field, and stealing it means the only way out of the
+		// To field is to first dismiss a popup they may not know is open.
 	}
 </script>
 
@@ -152,43 +165,54 @@
 			spellcheck="false"
 			placeholder="name@example.com, another@example.com"
 			oninput={onInput}
-			onclick={syncCaret}
+			onclick={() => {
+				syncCaret();
+				open = true;
+			}}
 			onkeyup={syncCaret}
 			onkeydown={onKeydown}
 			onfocus={() => {
+				// Deliberately does **not** open the popup. Tabbing into a field selects
+				// its whole value, which puts `selectionStart` at 0 — the popup would
+				// open against the *first* address in the list, suggesting a contact the
+				// field already holds. Typing (or clicking to place the caret) opens it.
 				syncCaret();
-				open = true;
 			}}
 			onblur={() => {
 				// A click on an option fires blur first; the option's `onmousedown`
 				// prevents default so focus never actually leaves, but a real blur
 				// (Tab away, click elsewhere) must close the popup.
-				open = false;
-				activeIndex = -1;
+				close();
 			}}
 			class="w-full rounded border border-border bg-surface px-2.5 py-1.5 font-mono text-sm text-text-primary transition-colors duration-fast ease-standard placeholder:text-text-muted focus:border-accent focus:outline-none aria-[invalid=true]:border-danger"
 		/>
 
 		{#if suggestions.length > 0}
+			<!--
+				Depth comes from the `surface`-vs-`background` contrast and a 1px border,
+				never a drop shadow — `tasks/prd-ui-ux.md`'s Shape & Depth rule, which the
+				rest of the app follows (`grep shadow src/` finds no other use).
+			-->
 			<ul
 				id={listboxId}
 				role="listbox"
 				aria-label="{label} contact suggestions"
-				class="absolute z-10 mt-1 max-h-64 w-full overflow-y-auto rounded border border-border bg-surface py-1 shadow-lg"
+				class="absolute z-10 mt-1 max-h-64 w-full overflow-y-auto rounded border border-border bg-surface py-1"
 			>
 				{#each suggestions as contact, index (contact.email)}
 					<li
 						id="{listboxId}-{index}"
 						role="option"
 						aria-selected={index === activeIndex}
-						class="cursor-pointer px-2.5 py-1.5 {index === activeIndex ? 'bg-background' : ''}"
+						class="cursor-pointer px-2.5 py-1.5 hover:bg-background {index === activeIndex
+							? 'bg-background'
+							: ''}"
 						onmousedown={(event) => {
 							// Keeps focus in the input, so the field doesn't blur-and-close out
 							// from under the click that is choosing an option.
 							event.preventDefault();
 							choose(contact);
 						}}
-						onmouseenter={() => (activeIndex = index)}
 					>
 						<span class="block font-mono text-xs text-text-primary">{contact.email}</span>
 						{#if contact.name}
@@ -206,6 +230,6 @@
 			convention (`docs/notes/ui.md`): the field's own label and value must not
 			get swept into the announcement.
 		-->
-		<p id="{name}-error" role="alert" class="font-mono text-xs text-danger">{error}</p>
+		<p id="{name}-error" role="alert" class="font-sans text-sm text-danger">{error}</p>
 	{/if}
 </div>

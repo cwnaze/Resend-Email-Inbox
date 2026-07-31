@@ -72,8 +72,12 @@ parseAddressList
   ok   empty field yields nothing at all
   ok   bad entries are reported, good ones still parsed
   ok   order of first appearance is preserved
+  ok   a comma inside a quoted display name does not separate
+  ok   a semicolon inside angle brackets does not separate
 validateComposeDraft
   ok   an empty draft is not sendable
+  ok   a valid draft hands back the parsed recipients, so the send path need not re-parse
+  ok   the same address in To and Cc is refused, not delivered twice
   ok   recipient + subject is sendable
   ok   recipient + body only is sendable
   ok   a body of only whitespace is no body
@@ -85,6 +89,7 @@ activeEntry
   ok   caret at the end targets the last entry
   ok   caret inside an earlier entry targets that one
   ok   an out-of-range caret is clamped, not thrown
+  ok   the caret scan ignores a comma inside a quoted name
 replaceActiveEntry
   ok   replaces the fragment being typed and appends a separator
   ok   earlier addresses survive, with exactly one separator between
@@ -97,7 +102,7 @@ suggestContacts
   ok   addresses already in the field are not re-offered
   ok   the suggestion list is capped
 
-41/41 checks passed
+46/46 checks passed
 ```
 
 ### In the browser
@@ -182,6 +187,32 @@ rodney click '#cc-toggle' > /dev/null
 rodney input '#cc' 'oops' > /dev/null
 echo "  malformed Cc:           $(sendable)  ($(rodney text '#cc-error'))"
 
+# --- Fixes from review: pasted display names, To/Cc duplicates, no-JS submit ---
+compose
+rodney input '#to' '"Doe, Jane" <jane@f03-demo.example>, bob@f03-demo.example' > /dev/null
+rodney input '#subject' 'Pasted from another client' > /dev/null
+echo
+echo "a pasted \"Last, First\" <addr> list (the comma is inside the quotes):"
+echo "  sendable:               $(sendable)"
+echo "  parsed recipients:      $(rodney js "document.querySelector('#to-error') ? 'REJECTED' : 'both addresses accepted'")"
+compose
+rodney input '#to' 'dana@f03-demo.example' > /dev/null
+rodney input '#subject' 'Dupe check' > /dev/null
+rodney focus '#subject' > /dev/null
+rodney click '#cc-toggle' > /dev/null
+rodney input '#cc' 'DANA@f03-demo.example' > /dev/null
+echo "the same person in To and Cc (one delivery, not two):"
+echo "  sendable:               $(sendable)  ($(rodney text '#cc-error'))"
+compose
+echo "the Send button as server-rendered, i.e. what a no-JS client gets:"
+# Fetched from the page so the httpOnly session cookie rides along — curl can't
+# see that cookie, and an unauthenticated fetch would just return /login and
+# "prove" the absence of a disabled button for the wrong reason.
+SSR=$(rodney js "fetch('/compose').then(r=>r.text()).then(h=>(h.match(/<button[^>]*type=.submit.[^>]*>/g)||[]).some(b=>/\\sdisabled(=|>|\\s)/.test(b)))")
+echo "  any submit button disabled in it: $SSR"
+echo "  (false = a no-JS client can submit and get the action's own validation back)"
+echo "  disabled once hydrated:     $(rodney js "document.querySelector('$SEND').disabled")"
+
 # --- The same rule on the server, for a submit that never saw the button ------
 echo
 echo "the action re-checks it, so bypassing the disabled button changes nothing:"
@@ -201,7 +232,7 @@ rodney click "$SEND" > /dev/null
 rodney waitstable > /dev/null
 echo
 echo "submitting a valid draft (a plain POST, no client-side enhancement):"
-echo "  the page reports:       $(rodney text '[role=status]')"
+echo "  the page reports:       $(rodney text '[role=status]' | tr -s ' \n' ' ')"
 echo "  input survived:         $(rodney js "['#to','#subject','#body'].map(s=>JSON.stringify(document.querySelector(s).value)).join(' ')")"
 ```
 
@@ -232,31 +263,41 @@ send gate:
   malformed recipient:    false  (Not a valid address: not-an-address)
   malformed Cc:           false  (Not a valid address: oops)
 
+a pasted "Last, First" <addr> list (the comma is inside the quotes):
+  sendable:               true
+  parsed recipients:      both addresses accepted
+the same person in To and Cc (one delivery, not two):
+  sendable:               false  (Already in To: dana@f03-demo.example)
+the Send button as server-rendered, i.e. what a no-JS client gets:
+  any submit button disabled in it: false
+  (false = a no-JS client can submit and get the action's own validation back)
+  disabled once hydrated:     true
+
 the action re-checks it, so bypassing the disabled button changes nothing:
   invalid draft:          failure 400
   and it echoes it back:  oops
   no cookie at all:       failure 401, Not authenticated.
 
 submitting a valid draft (a plain POST, no client-side enhancement):
-  the page reports:       Draft accepted — sending is not wired up yet (US-H02).
+  the page reports:       Nothing was sent. This screen can compose and check a message, but delivery isn’t connected yet — the draft above is exactly what was submitted. 
   input survived:         "casey@f03-demo.example" "Kickoff" "First outbound draft."
 ```
 
-The field mid-suggestion. The popup is themed to the app's own surface (a `<datalist>` could not be), addresses are in the metadata face, and the display name sits under the address it belongs to — the thing you remember is the thing you can search by:
+The field mid-suggestion. The popup is themed to the app's own surface (a `<datalist>` could not be) with a border rather than a drop shadow, addresses are in the metadata face, and the display name sits under the address it belongs to:
 
 ```bash {image}
 ![The To field showing two contact suggestions below it, with the Send button disabled](docs/demos/us-h01-autocomplete.png)
 ```
 
-![The To field showing two contact suggestions below it, with the Send button disabled](9300bebb-2026-07-30.png)
+![The To field showing two contact suggestions below it, with the Send button disabled](4ead7845-2026-07-31.png)
 
 ### Acceptance criteria
 
-- [x] **`/compose` renders To, Cc (optional, collapsible), Subject, and body fields** — `To* / Subject / Message` render immediately, with Cc behind a `+ Cc` toggle. Collapsed means *not rendered*, so the form submits no `cc` field at all rather than a hidden one holding something stale.
-- [x] **To supports typing an address directly or selecting from existing contacts (autocomplete)** — typing `cas` offers both matching contacts (address-prefix match ranked ahead of the name match), and either a click or ArrowDown+Enter inserts it followed by a separator, ready for the next recipient. A hand-typed address matching no contact is accepted and sendable.
+- [x] **`/compose` renders To, Cc (optional, collapsible), Subject, and body fields** — `To* / Subject / Message` render immediately, with Cc behind a `+ Cc` toggle. Collapsed means *not rendered*, so the form submits no `cc` field rather than a hidden one holding something stale.
+- [x] **To supports typing an address directly or selecting from existing contacts (autocomplete)** — typing `cas` offers both matching contacts (address-prefix match ranked ahead of the name match), and either a click or ArrowDown+Enter inserts it followed by a separator. A hand-typed address matching no contact is accepted and sendable, and a pasted `"Last, First" <addr>` list parses correctly.
 - [x] **The body supports plain text** — a plain `<textarea>`; there is no editor to fall back from.
-- [x] **Client-side validation requires at least one To address and a non-empty subject or body before allowing send** — Send is `disabled` for an empty form, for a recipient with neither subject nor body, and for a malformed address in To *or* Cc; it enables for recipient + body and for recipient + subject. The server action re-checks the same rule, so a submit that never saw the button (the two `fetch`es above) is rejected identically — and a session-less POST is refused before anything else happens.
+- [x] **Client-side validation requires at least one To address and a non-empty subject or body before allowing send** — Send is disabled for an empty form, for a recipient with neither subject nor body, for a malformed address in To *or* Cc, and for the same person appearing in both; it enables for recipient + body and for recipient + subject. The server action re-checks the same rule, so a submit that never saw the button is rejected identically, and a session-less POST is refused before anything else happens. The `disabled` state is browser-only, so a no-JS client can still submit and receive the action's own validation.
 - [x] **Typecheck passes** — `npm run check`, 0 errors, 0 warnings (and `npm run lint` clean).
 - [x] **Verify in browser using dev-browser skill** — the run above (rodney against `npm run dev`).
 
-Deliberately **not** in this story, and left for the ones that own them: the send itself and the outbound `emails` row (US-H02), reply/forward pre-fill and threading headers (US-H03/H04), and attachments (US-H05). A valid submit today reports that it went nowhere rather than implying otherwise.
+Deliberately **not** in this story: the send itself and the outbound `emails` row (US-H02), reply/forward pre-fill and threading headers (US-H03/H04), and attachments (US-H05). A valid submit today says plainly that nothing was sent.
