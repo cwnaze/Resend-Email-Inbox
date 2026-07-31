@@ -19,7 +19,7 @@ import {
 } from '$lib/server/email/resend';
 import { storeInboundAttachments } from '$lib/server/inbound/attachments';
 import { deleteFromR2, uploadToR2 } from '$lib/server/r2';
-import { upsertContactFromInbound } from '$lib/server/db/contacts';
+import { upsertAutoContact } from '$lib/server/db/contacts';
 import { storeInboundEmail } from '$lib/server/inbound/store';
 import { db } from '$lib/server/db';
 
@@ -62,7 +62,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 	const parsed = parseReceivedEmail(received);
 
-	const { contact, created } = await upsertContactFromInbound(db, {
+	const { contact, created } = await upsertAutoContact(db, {
 		email: parsed.fromEmail,
 		name: parsed.fromName
 	});

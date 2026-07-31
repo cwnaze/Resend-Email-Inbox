@@ -1,9 +1,9 @@
 // Thin Resend client wrapper (server-only).
 //
-// Exports what's needed today: sending the auth-code email (US-B02) and
-// fetching a received email's full content (US-E02). Outbound-mail-sending
-// stories (US-H02) can add a general `sendEmail` helper alongside these rather
-// than duplicating the client setup.
+// Exports what's needed today: sending the auth-code email (US-B02), fetching a
+// received email's full content and attachments (US-E02/US-E05), and sending a
+// composed outbound email (US-H02). Every one of them goes through the single
+// lazily-built `getClient()` rather than constructing its own.
 //
 // Both env reads are lazy (first send, not module import) on purpose:
 // `npm run build` imports every `+server.ts` to detect its exported HTTP
@@ -59,6 +59,124 @@ export async function sendAuthCodeEmail(code: string) {
 		console.error('Resend auth-code send failed:', error);
 		throw new Error('Failed to send auth code email');
 	}
+}
+
+/**
+ * The address outbound mail is sent as (US-H02, FR-1).
+ *
+ * A server-side constant like `AUTH_SENDER_EMAIL`, not a request input and not
+ * an env var: the sending domain is fixed by the Resend account, and `from` is
+ * the one field of an outbound send that must never be influenced by what the
+ * form submitted.
+ *
+ * On the apex, which is where Resend holds the MX (see CLAUDE.md) — so a reply
+ * to something this app sent comes back through the inbound webhook and lands in
+ * this inbox, rather than bouncing off a subdomain nothing receives.
+ */
+const OUTBOUND_SENDER_EMAIL = 'casey@caseynazelrod.com';
+
+export function getOutboundSender(): string {
+	return OUTBOUND_SENDER_EMAIL;
+}
+
+export type OutboundEmail = {
+	to: string[];
+	cc: string[];
+	subject: string;
+	/** The composed message, as typed. Plain text is the only body v1 sends. */
+	text: string;
+	/**
+	 * The `Message-ID` to put on the wire, angle brackets included, minted by
+	 * `outbound/message-id.ts`. Passed in rather than generated here because the
+	 * *same* string is written to `emails.message_id` — that pairing is what makes
+	 * a reply thread back onto this message.
+	 */
+	messageId: string;
+	/** The parent's `Message-ID`, for a reply (US-H03). Null for a new message. */
+	inReplyTo?: string | null;
+};
+
+/**
+ * A send that did not happen. Carries a message safe to show the owner: the
+ * provider's own wording is logged server-side only, matching every other error
+ * in this module.
+ */
+export class OutboundSendError extends Error {
+	constructor() {
+		super('Failed to send email');
+		this.name = 'OutboundSendError';
+	}
+}
+
+/**
+ * Sends one composed email (US-H02, FR-1) and returns Resend's email id.
+ *
+ * **Text only, no HTML part.** The compose screen is a `<textarea>`, so the
+ * message *is* plain text; generating an HTML twin of it would add an escaping
+ * step and a second body that can disagree with the first, in exchange for
+ * nothing a recipient can see. The PRD's open question (always generate a text
+ * fallback alongside HTML) is satisfied trivially in this direction — if rich
+ * composition is ever added, the text part is what has to keep being generated.
+ *
+ * The threading headers go through `headers` because the SDK has no typed field
+ * for any of them, and **which ones survive was measured, not assumed** (US-H02;
+ * both probes are written up in `docs/notes/compose.md`):
+ *
+ * - `Message-ID` is **discarded**. Resend sends through Amazon SES, which stamps
+ *   its own `<…@email.amazonses.com>` id — a send with a custom `Message-ID`
+ *   arrived carrying SES's. It is still set here (it costs nothing and would
+ *   start working if that ever changed) but nothing may *depend* on it: a
+ *   recipient's reply will cite SES's id, which this app never learns, because
+ *   `emails.get()` 404s for seconds after a send and an action cannot wait.
+ * - `In-Reply-To` and `References` **are** preserved verbatim.
+ *
+ * That asymmetry is why `References` carries this app's own minted id even on a
+ * brand-new message with no parent: a replying client copies the parent's
+ * `References` into its reply, so the minted id comes back in the reply's
+ * `References` chain — which `inbound/store.ts` matches against
+ * `emails.message_id` (`findThreadIdByMessageIds` reads both headers). It is the
+ * one header-level hook back to a message this app sent. The 30-day same-subject
+ * fallback catches the rest.
+ *
+ * The returned id is Resend's own handle for the send — deliberately *not* what
+ * `emails.message_id` stores (see `outbound/message-id.ts`); it is returned for
+ * logging, where knowing which delivery a row corresponds to is worth having.
+ */
+export async function sendOutboundEmail(email: OutboundEmail): Promise<string> {
+	// Oldest ancestor first, this message's own id last — the order `References`
+	// is defined to be in, and the order `inbound/parse.ts` reverses to walk the
+	// nearest ancestor first.
+	const references = [email.inReplyTo, email.messageId].filter(
+		(id): id is string => typeof id === 'string' && id !== ''
+	);
+	const headers: Record<string, string> = {
+		'Message-ID': email.messageId,
+		References: references.join(' ')
+	};
+	if (email.inReplyTo) headers['In-Reply-To'] = email.inReplyTo;
+
+	const { data, error } = await getClient().emails.send({
+		from: OUTBOUND_SENDER_EMAIL,
+		to: email.to,
+		// An empty array is omitted rather than sent: Resend rejects `cc: []` on
+		// some paths, and "no Cc" is the absence of the field.
+		...(email.cc.length > 0 ? { cc: email.cc } : {}),
+		subject: email.subject,
+		// Never the empty string: Resend answers `422 Missing \`html\` or \`text\`
+		// field` for `text: ''`, and a subject-only message is a draft the compose
+		// rule deliberately accepts ("a subject **or** a body"). A single space is a
+		// body as far as the API is concerned and renders as the empty message it is.
+		// The stored `body_text` keeps the original, so the thread view still says
+		// "no body" rather than showing a phantom space.
+		text: email.text === '' ? ' ' : email.text,
+		headers
+	});
+
+	if (error || !data) {
+		console.error('Resend outbound send failed:', error);
+		throw new OutboundSendError();
+	}
+	return data.id;
 }
 
 /**

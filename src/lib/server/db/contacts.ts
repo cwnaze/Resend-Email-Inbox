@@ -63,7 +63,12 @@ export type UpsertContactResult = {
 };
 
 /**
- * Upserts the sender of an inbound email into `contacts`.
+ * Upserts an address this app has seen into `contacts`, `auto_created`.
+ *
+ * Two callers, both of them "the owner corresponded with this address": the
+ * inbound webhook, with the sender of an arriving email and its display name
+ * (US-E02), and the send path, with every To/Cc recipient of a message the owner
+ * sent (US-H02, FR-5) — nameless, because compose drops display names.
  *
  * New addresses are inserted with `auto_created = true` and the payload's
  * display name. An existing contact with `auto_created = false` has been
@@ -72,7 +77,7 @@ export type UpsertContactResult = {
  * its name refreshed, since a later delivery carrying a display name is strictly
  * better than the null a first, bare-address delivery left behind.
  */
-export async function upsertContactFromInbound(
+export async function upsertAutoContact(
 	db: Database,
 	sender: { email: string; name?: string | null },
 	now: Date = new Date()
