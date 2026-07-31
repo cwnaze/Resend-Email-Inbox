@@ -18,7 +18,7 @@ import { inArray, like } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { contacts, emails, threads } from '../db/schema.js';
 import type { Database } from '../db/types.js';
-import { getThreadById, listThreadEmails } from '../db/emails.js';
+import { getThreadById, getVisibleEmailById, listThreadEmails } from '../db/emails.js';
 import { listInboxThreads } from '../db/inbox.js';
 import { newOutboundMessageId, senderDomain } from './message-id.js';
 import { storeSentEmail } from './store.js';
@@ -239,6 +239,40 @@ try {
 	check(
 		'sending into a thread with an unread message leaves it unread',
 		(await getThreadById(db, first.email.threadId))?.isRead === false
+	);
+
+	// The reply lookup (US-H03). `?replyTo=<id>` is the *only* thing the browser
+	// supplies, so this one query decides the recipient, the subject, the quote,
+	// the thread and the `In-Reply-To` of every reply — including its two refusals.
+	console.log('getVisibleEmailById — the reply target (US-H03)');
+	equal(
+		'finds the message a reply is answering',
+		(await getVisibleEmailById(db, first.email.id))?.messageId,
+		first.email.messageId
+	);
+	equal('an unknown id is undefined, not a throw', await getVisibleEmailById(db, stamp), undefined);
+
+	const [deletedParent] = await db
+		.insert(emails)
+		.values([
+			{
+				threadId: first.email.threadId,
+				messageId: `<${stamp}-deleted@invalid>`,
+				direction: 'inbound' as const,
+				fromEmail: `alice@${recipientDomain}`,
+				toEmails: [sender],
+				subject: `Re: ${stamp} hello there`,
+				bodyText: 'deleted parent',
+				isDeleted: true,
+				receivedAt: sentAt
+			}
+		])
+		.returning();
+	emailIds.push(deletedParent.id);
+	equal(
+		'a soft-deleted message is not a reply target — its text must not be quoted back out',
+		await getVisibleEmailById(db, deletedParent.id),
+		undefined
 	);
 
 	// And the whole point of storing the row: it shows up in the inbox.

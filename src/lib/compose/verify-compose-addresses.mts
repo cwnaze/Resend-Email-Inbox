@@ -19,6 +19,7 @@ import {
 	validateComposeDraft,
 	MAX_CONTACT_SUGGESTIONS
 } from './addresses.ts';
+import { quoteOriginal, replyBody, replyRecipients, replySubject } from './reply.ts';
 
 let passed = 0;
 let failed = 0;
@@ -244,6 +245,84 @@ check(
 		'example.com'
 	).length,
 	MAX_CONTACT_SUGGESTIONS
+);
+
+console.log('replySubject (US-H03)');
+check('prefixes a plain subject', replySubject('Lunch?'), 'Re: Lunch?');
+check('does not double-prefix', replySubject('Re: Lunch?'), 'Re: Lunch?');
+check('prefix matching is case-insensitive', replySubject('RE: Lunch?'), 'RE: Lunch?');
+check('tolerates a missing space after the colon', replySubject('re:Lunch?'), 're:Lunch?');
+check('a counted prefix still counts', replySubject('Re[2]: Lunch?'), 'Re[2]: Lunch?');
+check(
+	'leading whitespace is trimmed, not prefixed twice',
+	replySubject('  Re: Lunch?'),
+	'Re: Lunch?'
+);
+check('a forward is replied to, not left alone', replySubject('Fwd: Lunch?'), 'Re: Fwd: Lunch?');
+check('only the outermost prefix decides', replySubject('Re: Fwd: Lunch?'), 'Re: Fwd: Lunch?');
+check(
+	'a subject that merely starts with "re" is prefixed',
+	replySubject('Regarding X'),
+	'Re: Regarding X'
+);
+check('an empty subject stays empty', replySubject('   '), '');
+
+console.log('quoteOriginal / replyBody (US-H03)');
+check(
+	'attribution line then > -prefixed lines',
+	quoteOriginal({ sender: 'Ada', timestamp: 'Jan 2, 2026', body: 'one\ntwo' }),
+	'On Jan 2, 2026, Ada wrote:\n> one\n> two'
+);
+check(
+	'a blank line is quoted as a bare > (no trailing space)',
+	quoteOriginal({ sender: 'Ada', timestamp: 't', body: 'one\n\ntwo' }),
+	'On t, Ada wrote:\n> one\n>\n> two'
+);
+check(
+	'CRLF does not leave a stray carriage return inside the quote',
+	quoteOriginal({ sender: 'Ada', timestamp: 't', body: 'one\r\ntwo' }),
+	'On t, Ada wrote:\n> one\n> two'
+);
+check(
+	'a body-less message still gets its attribution',
+	quoteOriginal({ sender: 'Ada', timestamp: 't', body: '' }),
+	'On t, Ada wrote:'
+);
+check(
+	'the reply body opens with room to write above the quote',
+	replyBody({ sender: 'Ada', timestamp: 't', body: 'hi' }),
+	'\n\nOn t, Ada wrote:\n> hi\n'
+);
+check(
+	'a pre-filled reply is sendable as-is (recipient + quoted body)',
+	validateComposeDraft({
+		to: 'ada@example.com',
+		cc: '',
+		subject: replySubject('Lunch?'),
+		body: replyBody({ sender: 'Ada', timestamp: 't', body: 'hi' })
+	}).valid,
+	true
+);
+
+console.log('replyRecipients (US-H03)');
+const own = 'casey@caseynazelrod.com';
+check(
+	'an inbound message is replied to its sender',
+	replyRecipients({ direction: 'inbound', fromEmail: 'Ada@Example.com', toEmails: [own] }, own),
+	['ada@example.com']
+);
+check(
+	'a sent message is replied to its own recipients, not to oneself',
+	replyRecipients(
+		{ direction: 'outbound', fromEmail: own, toEmails: ['A@x.com', 'b@x.com', 'a@x.com'] },
+		own
+	),
+	['a@x.com', 'b@x.com']
+);
+check(
+	'replying to a message this app sent to itself yields no recipient',
+	replyRecipients({ direction: 'outbound', fromEmail: own, toEmails: [own] }, own),
+	[]
 );
 
 console.log(`\n${passed}/${passed + failed} checks passed`);
