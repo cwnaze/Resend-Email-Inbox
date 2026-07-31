@@ -27,6 +27,29 @@ export type NewInboundEmail = {
 	receivedAt: Date;
 };
 
+/**
+ * An email this app sent (US-H02). Distinct from `NewInboundEmail` in the three
+ * ways that matter: there is no `fromName`/`receivedAt` to take from a provider
+ * (the sender is this app and the timestamp is "now"), `bodyText` is required
+ * while `bodyHtml` is the optional one (the inverse of inbound mail, because the
+ * compose screen produces plain text), and it is `isRead` on arrival — the owner
+ * wrote it.
+ */
+export type NewOutboundEmail = {
+	threadId: string;
+	messageId: string;
+	inReplyTo: string | null;
+	fromEmail: string;
+	toEmails: string[];
+	ccEmails: string[];
+	subject: string;
+	bodyText: string;
+	/** Must already be sanitized if present — see `inbound/sanitize.ts`. */
+	bodyHtml: string | null;
+	/** Doubles as the inbox sort key, exactly as `receivedAt` does inbound. */
+	sentAt: Date;
+};
+
 export async function getEmailByMessageId(
 	db: Database,
 	messageId: string
@@ -71,7 +94,7 @@ export type InsertInboundEmailResult = {
  * Inserts an inbound email, idempotently on `message_id` (FR-2).
  *
  * `onConflictDoNothing()` + a re-read on the empty result is the same pattern
- * `upsertContactFromInbound` uses, and for the same reason: Resend retries
+ * `upsertAutoContact` uses, and for the same reason: Resend retries
  * webhook deliveries, so a duplicate is an expected event, not an error. A bare
  * insert would turn the `emails_message_id_unique` violation into a 500 — which
  * Resend would then retry forever, against a row that is already stored.
@@ -98,6 +121,64 @@ export async function insertInboundEmail(
 	if (existing) return { email: existing, created: false };
 
 	throw new Error(`inbound email insert failed for message_id ${values.messageId}`);
+}
+
+/**
+ * Inserts an email this app just sent (US-H02).
+ *
+ * `direction = 'outbound'` and `is_read = true` are set here, not by the caller,
+ * for the same reason `insertInboundEmail` pins its own pair: those two columns
+ * are what "this row is a sent message" *means*, and a caller that could pass
+ * them could write a row that lies about which it is.
+ *
+ * A bare insert, deliberately unlike the inbound path's `onConflictDoNothing`:
+ * the `message_id` here is one this app minted for this one send (see
+ * `outbound/message-id.ts`), so a unique-index violation is not an expected
+ * redelivery to absorb — it is a bug worth surfacing loudly.
+ */
+export async function insertOutboundEmail(db: Database, values: NewOutboundEmail): Promise<Email> {
+	const { sentAt, ...rest } = values;
+	const [inserted] = await db
+		.insert(emails)
+		.values({
+			...rest,
+			direction: 'outbound',
+			bccEmails: [],
+			isRead: true,
+			isDeleted: false,
+			receivedAt: sentAt
+		})
+		.returning();
+
+	if (!inserted) throw new Error(`outbound email insert failed for message_id ${values.messageId}`);
+	return inserted;
+}
+
+/**
+ * Records that a *sent* message joined a thread (US-H02).
+ *
+ * The counterpart to `touchThreadForNewMessage`, and different in exactly one
+ * way: `is_read` is **recomputed** instead of forced to false. A sent message is
+ * read by definition, so it must not re-flag a thread the owner has already
+ * caught up on — but neither may it silently mark one read: replying to a thread
+ * whose other messages are still unread leaves it unread. The recompute answers
+ * both, and it is also what makes a brand-new outbound-only thread read, since
+ * `createThread` writes every thread `is_read = false`.
+ *
+ * `last_message_at` moves forward only, in SQL, for the reason
+ * `touchThreadForNewMessage` documents.
+ */
+export async function touchThreadForSentMessage(
+	db: Database,
+	threadId: string,
+	messageAt: Date
+): Promise<void> {
+	await db
+		.update(threads)
+		.set({ lastMessageAt: sql`max(${threads.lastMessageAt}, ${messageAt.getTime()})` })
+		.where(eq(threads.id, threadId));
+
+	await recomputeThreadIsRead(db, threadId);
 }
 
 /**
@@ -223,10 +304,10 @@ export async function markThreadRead(db: Database, threadId: string): Promise<vo
  * Rewrites `threads.is_read` from the thread's emails: true exactly when no
  * *visible* (non-deleted) email is unread.
  *
- * This is the single definition of that aggregate, shared by `markThreadRead`
- * and `softDeleteThreadEmail` (US-G04) — both change the set of unread visible
- * emails, and two copies of the `not exists` would be two things to keep in
- * step. Always a recompute, never an assignment: see `markThreadRead`'s note
+ * This is the single definition of that aggregate, shared by `markThreadRead`,
+ * `softDeleteThreadEmail` (US-G04) and `touchThreadForSentMessage` (US-H02) —
+ * each changes the set of unread visible emails, and three copies of the
+ * `not exists` would be three things to keep in step. Always a recompute, never an assignment: see `markThreadRead`'s note
  * for the interleaving that a blind `set({ isRead: true })` loses.
  *
  * Takes a `Database` like every other helper here, but callers are expected to

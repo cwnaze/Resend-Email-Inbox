@@ -13,6 +13,9 @@ import {
 	type ComposeValidation
 } from '$lib/compose/addresses';
 import { validateSession } from '$lib/server/auth/session';
+import { getOutboundSender, sendOutboundEmail } from '$lib/server/email/resend';
+import { newOutboundMessageId } from '$lib/server/outbound/message-id';
+import { storeSentEmail } from '$lib/server/outbound/store';
 
 /**
  * One shape for every outcome, success and failure alike.
@@ -27,10 +30,18 @@ type ComposeResult = {
 	/** Always echoed, so no failure path can lose typed content (FR-4). */
 	draft: ComposeDraft;
 	errors?: ComposeValidation['errors'];
-	/** The draft passed validation. US-H01 sends nothing, so this is all it means. */
-	accepted?: boolean;
+	/** The message was handed to Resend and accepted (US-H02). */
+	sent?: boolean;
+	/** The thread the sent message landed in, so the page can link to it. */
+	threadId?: string;
 	/** A whole-form failure, as opposed to a per-field validation message. */
 	error?: string;
+	/**
+	 * Delivered, but something after the send went wrong (the row didn't store).
+	 * Reported *with* `sent: true`, never as an error — a delivered message shown
+	 * as a failure invites a second send of the same mail.
+	 */
+	warning?: string;
 };
 
 export const load: PageServerLoad = async () => {
@@ -45,19 +56,26 @@ function field(form: FormData, name: keyof ComposeDraft): string {
 
 export const actions = {
 	/**
-	 * Accepts the compose form and re-checks it server-side.
+	 * Re-checks the compose form server-side, sends it, and records what was sent
+	 * (US-H02).
 	 *
-	 * **US-H01 stops here: nothing is sent and nothing is written.** Delivery and
-	 * the outbound `emails` row are US-H02, and this action exists now so the
-	 * gating criterion has a real submit target rather than a button wired to
-	 * nothing — which also means the validation is enforced without JavaScript,
-	 * not just by the disabled button.
+	 * Three steps in a fixed order, and the order is the whole design:
 	 *
-	 * Every failure path returns the draft back to the page. That is US-H02's
-	 * FR-4 ("send failures must never silently drop composed content") arriving
-	 * early, and it is cheaper to build it in now than to retrofit it around a
-	 * send call: the page renders from `form?.draft ?? ''`, so a failed submit
-	 * re-renders what was typed.
+	 * 1. **Validate** with the same `validateComposeDraft` the button is gated on,
+	 *    so the rule is enforced even without JavaScript.
+	 * 2. **Send.** The only step whose failure means nothing happened, and
+	 *    therefore the only one that offers a retry.
+	 * 3. **Store.** Runs *after* delivery on purpose: the alternative (write the
+	 *    row, then send) has to either roll back a committed row or leave an
+	 *    `emails` row for mail that never went out, and a phantom sent message is
+	 *    the worse of the two lies. The cost is the reverse gap — delivered but
+	 *    unrecorded — which is why that case returns `sent: true` with a
+	 *    `warning` instead of an error.
+	 *
+	 * Every path returns the draft back to the page (FR-4: "send failures must
+	 * never silently drop composed content"), which is what makes the retry above
+	 * a real one — the page renders from `form?.draft`, so a failed send
+	 * re-renders exactly what was typed.
 	 *
 	 * One honest limit on that: the **401** path's draft only reaches a caller that
 	 * skips the loads (an `x-sveltekit-action` fetch). For an ordinary form POST,
@@ -67,12 +85,11 @@ export const actions = {
 	 * expired session needs client-side storage, which is not this story; what
 	 * matters here is that the refusal happens *before* anything is sent.
 	 *
-	 * **The session is validated here, in the action.** `(app)/+layout.server.ts`
-	 * protects page renders, and SvelteKit runs an action *before* any `load`, so
-	 * a POST would otherwise run its whole body before the layout ever redirected
-	 * an anonymous caller. This action is inert today, but the rule (see
-	 * `docs/notes/auth.md` and CLAUDE.md) is about the shape, not this body —
-	 * US-H02 fills it in with a real send and must not have to remember.
+	 * **The session is validated here, in the action — before anything is sent.**
+	 * `(app)/+layout.server.ts` protects page renders, and SvelteKit runs an action
+	 * *before* any `load`, so without this check a POST would run its whole body —
+	 * now a real send on the owner's domain — before the layout ever redirected an
+	 * anonymous caller. See `docs/notes/auth.md` and CLAUDE.md.
 	 */
 	send: async ({ cookies, request }) => {
 		// The body is read before the session is checked so that *every* return
@@ -94,6 +111,59 @@ export const actions = {
 			return fail(400, { draft, errors: validation.errors } satisfies ComposeResult);
 		}
 
-		return { draft, accepted: true } satisfies ComposeResult;
+		// The recipients `validateComposeDraft` already parsed, not a second parse of
+		// the raw fields: two parses are two rules waiting to disagree, and `cc` here
+		// has had any address that is also in `to` removed.
+		const from = getOutboundSender();
+		const messageId = newOutboundMessageId(from);
+		// Resend requires a subject, and the draft rule deliberately allows an empty
+		// one when there is a body. A visible placeholder is better than either
+		// refusing the send or letting the provider reject it.
+		const subject = draft.subject.trim() === '' ? '(no subject)' : draft.subject.trim();
+
+		try {
+			await sendOutboundEmail({
+				to: validation.to,
+				cc: validation.cc,
+				subject,
+				text: draft.body,
+				messageId
+			});
+		} catch (error) {
+			// The send is the only step whose failure means "nothing happened", so it
+			// is the only one that returns the draft for a retry (FR-4). `fail(502)`
+			// rather than a thrown 500: an unhandled error renders the error page and
+			// the composed message is gone.
+			console.error('compose send failed:', error);
+			return fail(502, {
+				draft,
+				error: 'Sending failed. Your message is still here — try again.'
+			} satisfies ComposeResult);
+		}
+
+		// Past this point the mail is out. Nothing below may report failure in a way
+		// that reads as "not sent", or the owner sends it twice.
+		try {
+			const { email } = await storeSentEmail(db, {
+				messageId,
+				// Threading a reply onto its parent is US-H03; a message composed here
+				// starts its own thread.
+				inReplyTo: null,
+				threadId: null,
+				fromEmail: from,
+				toEmails: validation.to,
+				ccEmails: validation.cc,
+				subject,
+				bodyText: draft.body
+			});
+			return { draft, sent: true, threadId: email.threadId } satisfies ComposeResult;
+		} catch (error) {
+			console.error('compose send stored no row:', messageId, error);
+			return {
+				draft,
+				sent: true,
+				warning: 'Delivered, but this copy could not be saved to your inbox.'
+			} satisfies ComposeResult;
+		}
 	}
 } satisfies Actions;

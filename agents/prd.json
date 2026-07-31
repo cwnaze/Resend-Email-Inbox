@@ -421,8 +421,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 28,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Sends via `sendOutboundEmail` and records the row with `storeSentEmail`; action order is validate \u2192 send \u2192 store, and only the send failing returns the draft for a retry. Measured: Resend rewrites `Message-ID` (SES) but preserves `In-Reply-To`/`References`, so `emails.message_id` holds the app-minted id and the send seeds `References` with it \u2014 US-H03 must not undo that. A new message always starts a new thread; a reply passes `threadId`."
     },
     {
       "id": "US-H03",

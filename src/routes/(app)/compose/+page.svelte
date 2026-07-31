@@ -8,12 +8,13 @@
 	 * Plain text, not a rich-text editor. The criterion allows an editor "if plain
 	 * text always works", and a `<textarea>` is the version where plain text
 	 * cannot stop working: no contenteditable, no paste sanitisation, nothing to
-	 * serialise, and the body that reaches the send call in US-H02 is exactly the
-	 * characters that were typed.
+	 * serialise, and the body that reaches the send call is exactly the characters
+	 * that were typed.
 	 *
-	 * Nothing is sent yet — that is US-H02. Submitting a valid draft returns the
-	 * inert `notImplemented` result from the action, which the notice below
-	 * reports honestly rather than pretending mail went out.
+	 * Submitting a valid draft sends it (US-H02). The three outcomes the action can
+	 * return are rendered at the bottom of the form: sent (with a link to the
+	 * thread it landed in), sent-but-unrecorded, and not-sent — the last being the
+	 * only one that keeps the draft in the fields for a retry.
 	 */
 	import { untrack } from 'svelte';
 	import { browser } from '$app/environment';
@@ -33,7 +34,11 @@
 	// truth and a later `form` update must not overwrite it. The form is a plain
 	// (non-`enhance`d) POST, so a result arrives with a fresh page render and
 	// therefore a fresh mount — this reads the new draft every time it matters.
-	const seed = untrack(() => form?.draft);
+	// A *sent* message is deliberately not seeded back: leaving the fields full
+	// after a successful send hands the owner a loaded form whose only obvious
+	// gesture is Send again. Failure keeps the draft (that is the point of FR-4);
+	// success clears it.
+	const seed = untrack(() => (form?.sent ? undefined : form?.draft));
 	let to = $state(seed?.to ?? '');
 	let cc = $state(seed?.cc ?? '');
 	let subject = $state(seed?.subject ?? '');
@@ -195,10 +200,22 @@
 			{/if}
 		</div>
 
-		{#if form?.accepted}
+		{#if form?.sent}
+			<!--
+				A delivered message is reported as delivered even when the `emails` row
+				failed to write: the warning says what is missing, but nothing here may
+				read as "not sent" or the owner sends the same mail twice.
+			-->
 			<p role="status" class="font-sans text-sm text-text-muted">
-				Nothing was sent. This screen can compose and check a message, but delivery isn’t connected
-				yet — the draft above is exactly what was submitted.
+				Sent.
+				{#if form.threadId}
+					<a
+						href={resolve('/(app)/inbox/[threadId]', { threadId: form.threadId })}
+						class="text-accent underline decoration-dotted underline-offset-2">View the thread</a
+					>.
+				{:else if form.warning}
+					{form.warning}
+				{/if}
 			</p>
 		{/if}
 		{#if form?.error}
