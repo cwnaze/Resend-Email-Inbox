@@ -30,6 +30,30 @@ export async function getContactByEmail(db: Database, email: string): Promise<Co
 	return row;
 }
 
+/**
+ * Every contact, for the compose screen's recipient autocomplete (US-H01).
+ *
+ * The whole table, filtered in the browser rather than per keystroke on the
+ * server: Turso is remote, so a query per keystroke is a round trip per
+ * keystroke, and this table holds one row per address the owner has ever
+ * corresponded with — kilobytes, not megabytes. If it ever grows past what a
+ * page load should carry, the fix is a server-side `?q=` lookup, not a bigger
+ * payload.
+ *
+ * Only the two columns the suggestion list renders are selected, so
+ * `auto_created` and the timestamps don't cross the wire. Ordering is name-then-
+ * address so it's stable and the list reads alphabetically; `suggestContacts`
+ * preserves this order within a rank.
+ */
+export async function listContactsForSuggestions(
+	db: Database
+): Promise<{ email: string; name: string | null }[]> {
+	return db
+		.select({ email: contacts.email, name: contacts.name })
+		.from(contacts)
+		.orderBy(sql`coalesce(${contacts.name}, ${contacts.email}) collate nocase`, contacts.email);
+}
+
 export type UpsertContactResult = {
 	contact: Contact;
 	/** True when this call inserted the row (vs. finding an existing one). */

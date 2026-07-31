@@ -32,7 +32,20 @@
 			dusk // inbox
 		</a>
 
-		<form method="POST" action="/api/auth/logout" class="ml-auto shrink-0">
+		<!--
+			Compose lives in the shell (unlike the search box and the thread list,
+			which left it): writing a new message is not part of the inbox list's
+			state, so every `(app)` route — a thread, a future `/contacts` — should
+			offer it from the same place.
+		-->
+		<a
+			href={resolve('/(app)/compose')}
+			class="ml-auto shrink-0 rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:border-text-primary focus-visible:outline-none"
+		>
+			Compose
+		</a>
+
+		<form method="POST" action="/api/auth/logout" class="shrink-0">
 			<button
 				type="submit"
 				class="rounded border border-border bg-surface px-3 py-1.5 text-sm text-text-primary transition-colors duration-fast ease-standard hover:border-danger hover:text-danger"
