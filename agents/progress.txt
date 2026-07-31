@@ -566,3 +566,8 @@ Reviewed the diff and re-exercised the feature; seven things were actually wrong
   - `showboat note <file> -` writes a literal `-`; stdin is `showboat note <file> < file.md`. Three notes silently went missing that way before I noticed, and the fix was to rebuild the document.
   - Forcing a send failure in the browser is easiest as a **second dev server on another port with a bogus `RESEND_API_KEY`** — `process.env` wins over `.env` in dev, so no config file has to be edited and the good server keeps running.
   - Inline `tsx -e "…"` inside a `showboat exec` block gets mangled (brace expansion eats `{ }`); heredoc a `.mts` file into the **repo root** and `rm` it in a `trap`, per US-G04's note.
+
+### US-H02 review fixes (same branch)
+Reviewed the diff and re-exercised the feature. One real bug, found by asking what the *validation rule* allows that the *provider* doesn't:
+- **A subject-only send failed with a bare "Sending failed".** `validateComposeDraft` accepts "a subject **or** a body", but Resend answers `422 Missing \`html\` or \`text\` field` for `text: ''`. `sendOutboundEmail` now substitutes a single space on the wire (measured: `' '` and `'\n'` are both accepted) while `emails.body_text` keeps the original empty string, so the thread view still renders its "no body" line. Verified in the browser: a subject-only draft now reports Sent, and the stored row's `body_text` is `''`.
+- **Learning:** the gate and the provider are two different validators. Every combination the local rule *permits* is worth one probe against the real API — the compose rule's "subject or body" branch had never been sent, and it was the only branch that was broken.

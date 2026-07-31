@@ -162,7 +162,13 @@ export async function sendOutboundEmail(email: OutboundEmail): Promise<string> {
 		// some paths, and "no Cc" is the absence of the field.
 		...(email.cc.length > 0 ? { cc: email.cc } : {}),
 		subject: email.subject,
-		text: email.text,
+		// Never the empty string: Resend answers `422 Missing \`html\` or \`text\`
+		// field` for `text: ''`, and a subject-only message is a draft the compose
+		// rule deliberately accepts ("a subject **or** a body"). A single space is a
+		// body as far as the API is concerned and renders as the empty message it is.
+		// The stored `body_text` keeps the original, so the thread view still says
+		// "no body" rather than showing a phantom space.
+		text: email.text === '' ? ' ' : email.text,
 		headers
 	});
 
