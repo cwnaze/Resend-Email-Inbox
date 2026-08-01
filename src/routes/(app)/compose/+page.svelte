@@ -20,8 +20,10 @@
 	import { browser } from '$app/environment';
 	import { resolve } from '$app/paths';
 	import RecipientField from './RecipientField.svelte';
+	import AttachmentField from './AttachmentField.svelte';
 	import ErrorMessage from '$lib/components/ErrorMessage.svelte';
 	import { validateComposeDraft } from '$lib/compose/addresses';
+	import type { AttachmentItem } from '$lib/compose/attachments';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -53,6 +55,37 @@
 	let cc = $state(seed?.cc ?? '');
 	let subject = $state(seed?.subject ?? '');
 	let body = $state(seed?.body ?? '');
+
+	// The picked files (US-H05), seeded the same way and for the same reason the
+	// draft is: the objects are already in R2 and the form is a plain POST, so a
+	// refused send that dropped this list would leave the owner re-picking files
+	// that are sitting in the bucket. Only ready (keyed) items can survive a round
+	// trip — a half-finished upload has no key to come back as.
+	//
+	// A *forward*'s carried attachments are deliberately not in here: they are
+	// looked up server-side from `?forwardOf=` at send time, so they stay the
+	// read-only list further down. They still count against the size limit, which
+	// is why their bytes are handed to the picker as `otherBytes`.
+	let attachments = $state<AttachmentItem[]>(
+		untrack(() =>
+			form?.sent
+				? []
+				: (form?.attachments ?? []).map((attachment) => ({
+						id: crypto.randomUUID(),
+						filename: attachment.filename,
+						sizeBytes: attachment.sizeBytes,
+						key: attachment.key,
+						status: 'ready' as const
+					}))
+		)
+	);
+
+	const uploading = $derived(attachments.some((attachment) => attachment.status === 'uploading'));
+
+	/** What a forward already commits to the per-message size limit (US-H04). */
+	const forwardedBytes = $derived(
+		(data.context?.attachments ?? []).reduce((sum, attachment) => sum + attachment.sizeBytes, 0)
+	);
 
 	// Cc starts collapsed (it is the exception, not the rule) but opens itself if
 	// a returned draft has one, so a rejected submit can't hide typed addresses
@@ -242,6 +275,14 @@
 			</div>
 		{/if}
 
+		<!--
+			The picker (US-H05). It sits below the forwarded list so the two read in
+			the order they will be sent: what the message already carries, then what
+			the owner is adding. `otherBytes` is how the forward's files count against
+			the same per-message limit even though this component cannot remove them.
+		-->
+		<AttachmentField bind:items={attachments} otherBytes={forwardedBytes} />
+
 		{#if showError('content')}
 			<p role="alert" class="font-sans text-sm text-danger">{validation.errors.content}</p>
 		{/if}
@@ -256,9 +297,16 @@
 				validation messages back; with JS the button reports itself unavailable
 				rather than accepting a click it would only refuse.
 			-->
+			<!--
+				Also unavailable while a file is still uploading (US-H05): the hidden
+				`attachments` field only carries files that already have an R2 key, so a
+				send that raced an upload would go out without it and nothing on screen
+				would ever say so. Still inside the `browser &&` guard — with no
+				JavaScript there are no uploads to wait for.
+			-->
 			<button
 				type="submit"
-				disabled={browser && !validation.valid}
+				disabled={browser && (!validation.valid || uploading)}
 				class="rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:border-text-primary focus-visible:outline-none disabled:cursor-not-allowed disabled:border-border disabled:bg-surface disabled:text-text-muted"
 			>
 				Send
@@ -266,6 +314,10 @@
 
 			{#if !validation.valid}
 				<p class="font-sans text-sm text-text-muted">Needs a recipient and a subject or message.</p>
+			{:else if uploading}
+				<p class="font-sans text-sm text-text-muted">
+					Waiting for attachments to finish uploading…
+				</p>
 			{/if}
 		</div>
 

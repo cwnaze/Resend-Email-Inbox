@@ -610,3 +610,43 @@ Reviewed the diff and re-exercised the feature. One real bug, found by asking wh
   - `showboat pop` removes an entry but leaves behind the part of a **note** that follows a fenced block — a note containing ``` is parsed as an executable block (`error: executing block N: exec: no command`). Keep captured output inside notes as inline code, and check the file after a pop.
   - `rodney screenshot -h N` is how you capture below the fold; `window.scrollTo` does not move what the screenshot sees.
 ---
+
+## 2026-07-31 - US-H05
+- Attach files when composing: a picker + drop zone on /compose, files uploaded straight
+  from the browser to R2 over a presigned PUT, attached to the Resend send, and recorded as
+  `attachments` rows against the new outbound `emails` row.
+- Files changed:
+  - NEW `src/lib/compose/attachments.ts` (pure: 25 MB per-message limit, filename
+    sanitization, pending-key shape, `parsePendingAttachments`, `AttachmentItem`)
+  - NEW `src/routes/(app)/compose/uploads/+server.ts` (POST mints a presigned PUT under a
+    server-minted key; DELETE drops a removed pending object; both validate the session)
+  - NEW `src/routes/(app)/compose/AttachmentField.svelte`
+  - NEW `src/lib/server/outbound/uploads.ts`, `src/lib/server/r2/set-cors.mts`
+  - `server/r2/index.ts` (+`getR2SignedUploadUrl`, +`headR2Object`)
+  - `server/outbound/attachments.ts` (generalized from forward-only to both sources)
+  - `compose/+page.server.ts`, `compose/+page.svelte`
+  - `verify-compose-addresses.mts` (99 checks), `verify-outbound-send.mts` (67 checks)
+  - `docs/notes/compose.md`, `docs/notes/infrastructure.md`, `CLAUDE.md`, `docs/demos/US-H05.md`
+- **Learnings for future iterations:**
+  - **Vercel functions cap a request body around 4.5 MB.** Anything user-supplied and larger
+    than that cannot travel through a form action or a `+server.ts` at all. Both directions
+    of this app now route around it: downloads 302 to a presigned GET (US-G03), uploads PUT
+    directly to a presigned URL (this story). Reach for a presigned URL before a proxy.
+  - **A presigned PUT from the browser needs a bucket CORS policy**, and `PutBucketCors`
+    needs an *Admin* R2 token while this repo's credentials are Object-scoped. The policy is
+    applied by hand in the Cloudflare dashboard; `r2/set-cors.mts` is the authoritative
+    record of it. Symptom when missing: every upload fails with an opaque network error and
+    an `OPTIONS` probe says `CORS not configured for this bucket`.
+  - **Mutating an object after pushing it into a `$state` array does not re-render.**
+    `items.push(obj)` stores a proxy; a later `obj.x = y` writes past the setter. Settle by
+    looking the entry back out of the array. Typecheck and lint both pass on the broken
+    version — only the browser shows it. This is now a cross-cutting rule in CLAUDE.md.
+  - **When a client uploads directly, decide field by field what the server re-derives.**
+    Here: key validated against a minted-only pattern, size and content type re-read from
+    R2's HEAD, filename sanitized, and the round-tripped `sizeBytes` explicitly marked
+    display-only. A limit enforced against a number the client chose is not a limit.
+  - Editing `agents/prd.json` with Python: pass `ensure_ascii=True` (the default) or the
+    rewrite unescapes every `—` in the file and buries the real change in noise.
+  - `showboat exec` blocks with nested quotes are far easier to write into a file first and
+    pass as `"$(cat block.sh)"` than to inline; `\x27` does not expand inside single quotes.
+---

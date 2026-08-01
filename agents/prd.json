@@ -468,8 +468,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 31,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Picked files are uploaded straight from the browser to R2 over a presigned PUT minted by `POST /compose/uploads`; the form submits only the object key. Not a preference \u2014 Vercel caps a function's request body ~4.5 MB, so 25 MB could never reach the action. The cost is that the key is request input, so `server/outbound/uploads.ts` accepts only keys matching `outbound/pending/<uuid>/<slug>`, re-derives size and content type from R2's own HEAD (the form's `sizeBytes` is display bookkeeping only), and sanitizes the filename. Requires a bucket CORS policy applied by hand in the Cloudflare dashboard \u2014 the repo's R2 token is Object-scoped and `PutBucketCors` needs Admin; `r2/set-cors.mts` is the record (see docs/notes/infrastructure.md). One 25 MB limit per *message*: US-H04's `MAX_FORWARDED_ATTACHMENT_BYTES`/`ForwardedAttachmentsTooLargeError`/`storeForwardedAttachments` became `MAX_ATTACHMENT_TOTAL_BYTES`/`AttachmentsTooLargeError`/`storeOutboundAttachments`, and both sources share one copy path. Reading a file is fatal before the send, everything after it is best-effort; the pending object is swept after the copy succeeds and deliberately left when it fails. Send is disabled while an upload is in flight. Gotcha found in the browser: mutating an object after `items.push(obj)` into a `$state` array does not re-render \u2014 settle by id (`AttachmentField.svelte`'s `settle()`)."
     },
     {
       "id": "US-I01",

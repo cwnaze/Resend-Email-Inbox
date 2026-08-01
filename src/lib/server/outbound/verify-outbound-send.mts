@@ -23,10 +23,18 @@ import { getThreadById, getVisibleEmailById, listThreadEmails } from '../db/emai
 import { listInboxThreads } from '../db/inbox.js';
 import { newOutboundMessageId, senderDomain } from './message-id.js';
 import {
-	forwardedObjectKey,
+	outboundObjectKey,
 	loadForwardedAttachments,
-	storeForwardedAttachments
+	storeOutboundAttachments,
+	MAX_ATTACHMENT_TOTAL_BYTES
 } from './attachments.js';
+import {
+	discardPendingAttachments,
+	loadPendingAttachments,
+	loadedTotalBytes,
+	pendingAttachmentKey,
+	pendingUploadId
+} from './uploads.js';
 import { storeSentEmail } from './store.js';
 
 let failures = 0;
@@ -365,7 +373,7 @@ try {
 		forwarded.email.threadId !== first.email.threadId
 	);
 
-	const copied = await storeForwardedAttachments(db, forwarded.email.id, loaded, {
+	const copied = await storeOutboundAttachments(db, forwarded.email.id, loaded, {
 		upload: async (key, body) => bucket.set(key, body)
 	});
 	attachmentIds.push(...copied.stored.map((row) => row.id));
@@ -378,7 +386,7 @@ try {
 	equal(
 		'the key is namespaced by the new email and the source attachment',
 		copied.stored[0].r2ObjectKey,
-		forwardedObjectKey(forwarded.email.id, loaded[0])
+		outboundObjectKey(forwarded.email.id, loaded[0])
 	);
 	check('the bytes were written under that key', bucket.has(copied.stored[0].r2ObjectKey));
 	equal(
@@ -395,7 +403,7 @@ try {
 	// The post-send half is best-effort: the mail is already out, so a failed copy
 	// is reported, not thrown, and the orphaned object is swept.
 	const removed: string[] = [];
-	const failedCopy = await storeForwardedAttachments(
+	const failedCopy = await storeOutboundAttachments(
 		db,
 		// An email id no row exists for, so the insert violates the FK.
 		`${stamp}-nonexistent`,
@@ -411,6 +419,130 @@ try {
 	equal('a failed copy is reported, not thrown', failedCopy.failed, [loaded[0].sourceId]);
 	equal('and nothing is claimed as stored', failedCopy.stored.length, 0);
 	equal('the orphaned object is swept out of the bucket', removed.length, 1);
+
+	// Picked attachments (US-H05). R2 is stubbed again — what matters here is that
+	// the *send* takes nothing about a browser-uploaded file on trust except the
+	// key it validated and the name it sanitized.
+	console.log('picked attachments (US-H05)');
+	const uploadId = '1e6a2f34-5b7c-4d8e-9f01-23456789abcd';
+	const pendingKey = pendingAttachmentKey(uploadId, 'Notes 2026.txt');
+	equal(
+		'a pending key is namespaced by the upload id, with the name as decoration only',
+		pendingKey,
+		`outbound/pending/${uploadId}/notes-2026.txt`
+	);
+	equal('and the id reads back out of it', pendingUploadId(pendingKey), uploadId);
+	bucket.set(pendingKey, Buffer.from('some notes'));
+
+	const picked = await loadPendingAttachments([{ key: pendingKey, filename: 'Notes 2026.txt' }], {
+		head: async (key) => ({
+			sizeBytes: bucket.get(key)?.byteLength ?? 0,
+			contentType: 'text/plain'
+		}),
+		download: async (key) => {
+			const bytes = bucket.get(key);
+			if (!bytes) throw new Error(`no such object ${key}`);
+			return bytes;
+		}
+	});
+	equal('the picked file is read', picked.length, 1);
+	equal('its display name is the one the form supplied', picked[0].filename, 'Notes 2026.txt');
+	equal('its content type comes from R2, not the form', picked[0].contentType, 'text/plain');
+	equal('the bytes are the uploaded object', picked[0].bytes.toString(), 'some notes');
+	equal('and the source id is the upload id', picked[0].sourceId, uploadId);
+	equal('the loaded total is the sum of the bytes', loadedTotalBytes(picked), 10);
+
+	check(
+		'a key the app never minted is refused before it ever reaches R2',
+		await (async () => {
+			try {
+				await loadPendingAttachments([{ key: sourceKey, filename: 'stolen.pdf' }], {
+					head: async () => {
+						throw new Error('should not be called');
+					},
+					download: async () => {
+						throw new Error('should not be called');
+					}
+				});
+				return false;
+			} catch {
+				return true;
+			}
+		})()
+	);
+	check(
+		'a vanished upload throws rather than sending a message with the file silently gone',
+		await (async () => {
+			try {
+				await loadPendingAttachments([{ key: pendingKey, filename: 'x' }], {
+					head: async () => {
+						throw new Error('no such object');
+					},
+					download: async () => Buffer.alloc(0)
+				});
+				return false;
+			} catch {
+				return true;
+			}
+		})()
+	);
+	check(
+		'R2’s size is what the limit is enforced against — an understating form buys nothing',
+		await (async () => {
+			let downloaded = false;
+			try {
+				await loadPendingAttachments([{ key: pendingKey, filename: 'x' }], {
+					head: async () => ({
+						sizeBytes: MAX_ATTACHMENT_TOTAL_BYTES + 1,
+						contentType: 'text/plain'
+					}),
+					download: async () => {
+						downloaded = true;
+						return Buffer.alloc(0);
+					}
+				});
+				return false;
+			} catch {
+				// And it is refused before any transfer: the check runs over the HEADs.
+				return !downloaded;
+			}
+		})()
+	);
+	check(
+		'the limit is per message, so a forward’s files leave less room for picked ones',
+		await (async () => {
+			try {
+				await loadForwardedAttachments(
+					db,
+					first.email.id,
+					{ download: async () => Buffer.alloc(0) },
+					MAX_ATTACHMENT_TOTAL_BYTES
+				);
+				return false;
+			} catch {
+				return true;
+			}
+		})()
+	);
+
+	// After the send, the pending copy is redundant: `storeOutboundAttachments`
+	// has written the message's own copy under its own key.
+	const pendingCopy = await storeOutboundAttachments(db, forwarded.email.id, picked, {
+		upload: async (key, body) => bucket.set(key, body)
+	});
+	attachmentIds.push(...pendingCopy.stored.map((row) => row.id));
+	equal('the picked file is recorded against the sent message', pendingCopy.stored.length, 1);
+	check(
+		'under this message’s own key, not the pending one',
+		pendingCopy.stored[0].r2ObjectKey !== pendingKey
+	);
+	await discardPendingAttachments([pendingKey], async (key) => bucket.delete(key));
+	check('and the pending object is swept once it is redundant', !bucket.has(pendingKey));
+	check('while the message’s own copy stays', bucket.has(pendingCopy.stored[0].r2ObjectKey));
+	await discardPendingAttachments([pendingKey], async () => {
+		throw new Error('R2 is down');
+	});
+	check('a failed sweep is swallowed — the mail is already out', true);
 
 	// And the whole point of storing the row: it shows up in the inbox.
 	const listed = (await listInboxThreads(db)).find((row) => row.threadId === first.email.threadId);

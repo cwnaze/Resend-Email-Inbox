@@ -1,9 +1,12 @@
-// Carrying an existing message's attachments onto a forward (US-H04).
+// Attachments on their way onto an outgoing message (US-H04, US-H05).
 //
-// The story's rule is "re-associated, not re-uploaded by the user": the owner
-// picked Forward, not a file dialog, so the bytes already exist — in R2, under
-// the *original* message's key — and this module moves them onto the outgoing
-// mail and then onto the new `emails` row.
+// Two sources, one destination. A **forward** re-associates an existing
+// message's files ("not re-uploaded by the user": the owner picked Forward, not
+// a file dialog, so the bytes already exist in R2 under the *original* message's
+// key). A **picked** file was uploaded straight to R2 by the browser before the
+// send and arrives here through `outbound/uploads.ts`. From `OutboundAttachment`
+// down, the two are the same thing: bytes with a name, headed for the send call
+// and then for one `attachments` row against the new `emails` row.
 //
 // Like `inbound/attachments.ts`, the two provider-facing operations (read from
 // R2, write to R2) are **injected** rather than imported: `server/r2` reads env
@@ -12,26 +15,20 @@
 import { getAttachmentsByEmailId, insertAttachment, type Attachment } from '../db/attachments';
 import type { Database } from '../db/types';
 import { attachmentKeySlug } from '../inbound/attachments';
+// Relative, not `$lib/...`: `verify-outbound-send.mts` runs under bare `tsx`,
+// which has no Vite alias resolution (CLAUDE.md).
+import { MAX_ATTACHMENT_TOTAL_BYTES } from '../../compose/attachments';
 
-/**
- * The most a single forward may carry, summed across its files.
- *
- * Resend's own ceiling is 40 MB per message; this sits under it deliberately,
- * because the number that matters is not the provider's limit but the memory of
- * the serverless function that has to hold every file at once (the bytes are
- * read before the send and written back after it — see `+page.server.ts`). The
- * check runs against the stored `size_bytes` *before* anything is downloaded, so
- * an oversized forward costs one query rather than 25 MB of transfer.
- *
- * Base 1000, not 1024, because `formatFileSize` renders in base 1000 and this
- * number is shown to the owner when a forward is refused: 25 MiB reads back as
- * "26.2 MB", which is not a limit anybody set.
- */
-export const MAX_FORWARDED_ATTACHMENT_BYTES = 25 * 1000 * 1000;
+// Re-exported so the server side of this feature has one import for it. The
+// definition lives in the pure module because the *browser* enforces it too.
+export { MAX_ATTACHMENT_TOTAL_BYTES };
 
-/** One file, in memory, on its way from the original message to the forward. */
-export type ForwardedAttachment = {
-	/** The source `attachments.id` — what makes the new object key unique. */
+/** One file, in memory, on its way onto an outgoing message. */
+export type OutboundAttachment = {
+	/**
+	 * What makes this file's key unique within the new message: the source
+	 * `attachments.id` for a forward, the pending upload's id for a picked file.
+	 */
 	sourceId: string;
 	filename: string;
 	contentType: string;
@@ -43,12 +40,12 @@ export type LoadForwardedAttachmentsDeps = {
 	download: (key: string) => Promise<Buffer>;
 };
 
-export class ForwardedAttachmentsTooLargeError extends Error {
+export class AttachmentsTooLargeError extends Error {
 	readonly totalBytes: number;
 
 	constructor(totalBytes: number) {
-		super('Forwarded attachments exceed the size limit');
-		this.name = 'ForwardedAttachmentsTooLargeError';
+		super('Attachments exceed the size limit');
+		this.name = 'AttachmentsTooLargeError';
 		this.totalBytes = totalBytes;
 	}
 }
@@ -63,23 +60,30 @@ export class ForwardedAttachmentsTooLargeError extends Error {
  * the action refuses the send while the draft is still on screen.
  *
  * Sequential for the reason `storeInboundAttachments` is: peak memory is bounded
- * by the total, which `MAX_FORWARDED_ATTACHMENT_BYTES` already caps, but nothing
+ * by the total, which `MAX_ATTACHMENT_TOTAL_BYTES` already caps, but nothing
  * is gained by having every download in flight at once.
  */
 export async function loadForwardedAttachments(
 	db: Database,
 	sourceEmailId: string,
-	deps: LoadForwardedAttachmentsDeps
-): Promise<ForwardedAttachment[]> {
+	deps: LoadForwardedAttachmentsDeps,
+	/**
+	 * Bytes already committed to this message by files from the *other* source
+	 * (US-H05: the owner can add their own files to a forward). The limit is per
+	 * message, not per source — Resend's ceiling and the function's memory are
+	 * both counted once.
+	 */
+	existingBytes: number = 0
+): Promise<OutboundAttachment[]> {
 	const rows = await getAttachmentsByEmailId(db, sourceEmailId);
 	if (rows.length === 0) return [];
 
-	const totalBytes = rows.reduce((sum, row) => sum + row.sizeBytes, 0);
-	if (totalBytes > MAX_FORWARDED_ATTACHMENT_BYTES) {
-		throw new ForwardedAttachmentsTooLargeError(totalBytes);
+	const totalBytes = existingBytes + rows.reduce((sum, row) => sum + row.sizeBytes, 0);
+	if (totalBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+		throw new AttachmentsTooLargeError(totalBytes);
 	}
 
-	const loaded: ForwardedAttachment[] = [];
+	const loaded: OutboundAttachment[] = [];
 	for (const row of rows) {
 		loaded.push({
 			sourceId: row.id,
@@ -92,28 +96,33 @@ export async function loadForwardedAttachments(
 }
 
 /**
- * The R2 key a forwarded copy is written under.
+ * The R2 key this message's copy of a file is written under.
  *
- * A **copy**, not the original key shared by two rows. Sharing would make one
- * object the content of two messages, so deleting either one's blob (or the
- * bucket lifecycle reaching it) would silently empty the other — an aliasing bug
- * that only shows up long after the forward, when the original is gone. The
- * source attachment id is what makes the key unique within the new message, the
- * new email id namespaces it, and the slug is decoration.
+ * Always a **copy**, never the source key shared by two rows — that holds for
+ * both sources. Sharing would make one object the content of two messages, so
+ * deleting either one's blob (or the bucket lifecycle reaching it) would
+ * silently empty the other, an aliasing bug that only shows up long after the
+ * fact. For a picked file (US-H05) it also gets the object out of
+ * `outbound/pending/`, where an unclaimed upload can be swept: a settled
+ * attachment must not live under a prefix whose whole meaning is "not yet
+ * claimed by a send".
+ *
+ * `sourceId` is what makes the key unique within the new message, the new email
+ * id namespaces it, and the slug is decoration.
  */
-export function forwardedObjectKey(emailId: string, attachment: ForwardedAttachment): string {
+export function outboundObjectKey(emailId: string, attachment: OutboundAttachment): string {
 	const slug = attachmentKeySlug(attachment.filename);
 	const suffix = slug === '' ? '' : `-${slug}`;
 	return `outbound/${emailId}/${attachment.sourceId}${suffix}`;
 }
 
-export type StoreForwardedAttachmentsDeps = {
+export type StoreOutboundAttachmentsDeps = {
 	upload: (key: string, body: Buffer, contentType: string) => Promise<unknown>;
 	/** Undoes an upload whose row then failed to insert (see `inbound/attachments.ts`). */
 	remove?: (key: string) => Promise<unknown>;
 };
 
-export type StoreForwardedAttachmentsResult = {
+export type StoreOutboundAttachmentsResult = {
 	stored: Attachment[];
 	/** Source attachment ids whose copy could not be recorded — logged, not retried. */
 	failed: string[];
@@ -128,17 +137,17 @@ export type StoreForwardedAttachmentsResult = {
  * files attached is already out. A failure here costs the owner's own copy of a
  * file the recipient has, and nothing it reports may read as "not sent".
  */
-export async function storeForwardedAttachments(
+export async function storeOutboundAttachments(
 	db: Database,
 	emailId: string,
-	attachments: ForwardedAttachment[],
-	deps: StoreForwardedAttachmentsDeps
-): Promise<StoreForwardedAttachmentsResult> {
+	attachments: OutboundAttachment[],
+	deps: StoreOutboundAttachmentsDeps
+): Promise<StoreOutboundAttachmentsResult> {
 	const stored: Attachment[] = [];
 	const failed: string[] = [];
 
 	for (const attachment of attachments) {
-		const key = forwardedObjectKey(emailId, attachment);
+		const key = outboundObjectKey(emailId, attachment);
 		let uploaded = false;
 		try {
 			await deps.upload(key, attachment.bytes, attachment.contentType);
