@@ -1,5 +1,5 @@
-// Standalone smoke test for the contacts list (US-I01): `listContacts` against
-// the live Turso DB.
+// Standalone smoke test for `/contacts`'s query helpers against the live Turso
+// DB: `listContacts` (US-I01) and `updateContactName` (US-I02).
 //
 // Run with:
 //   node --env-file=.env node_modules/.bin/tsx src/lib/server/db/verify-contacts-list.mts
@@ -20,7 +20,7 @@ import { inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { contacts, emails, threads } from './schema.js';
 import type { Database } from './types.js';
-import { listContacts } from './contacts.js';
+import { listContacts, updateContactName, upsertAutoContact } from './contacts.js';
 
 let failures = 0;
 let checks = 0;
@@ -201,6 +201,46 @@ try {
 	check(
 		'contacts with no mail still preserve auto_created',
 		byEmail.get(silent)?.autoCreated === false && byEmail.get(sender)?.autoCreated === true
+	);
+
+	// --- updateContactName (US-I02) ---------------------------------------
+	//
+	// The point of the rename is not the `name` write, which a typecheck would
+	// catch; it is that the write also clears `auto_created`, and that the flag
+	// then actually stops `upsertAutoContact` from putting the old name back.
+	// Only a real round trip through both helpers shows that, so this asserts on
+	// the pair rather than on the update alone.
+	console.log('updateContactName — live DB');
+
+	const senderId = byEmail.get(sender)!.id;
+
+	const renamed = await updateContactName(db, senderId, '  Zoe Q. Sender  ');
+	equal('trims the stored name', renamed?.name, 'Zoe Q. Sender');
+	check('clears auto_created on a manual rename', renamed?.autoCreated === false);
+
+	// The exact regression FR-2 exists to prevent: the next delivery from this
+	// address carries the sender's own inconsistent display name.
+	const afterInbound = await upsertAutoContact(db, { email: sender, name: 'zoe (mobile)' });
+	check('a later auto-upsert does not overwrite a manual name', !afterInbound.nameUpdated);
+	equal('the manual name survives the auto-upsert', afterInbound.contact.name, 'Zoe Q. Sender');
+
+	// Blank stores NULL, not '': the list's sort and `displayName` both treat
+	// NULL as "fall back to the address", and '' would sort ahead of every name.
+	const cleared = await updateContactName(db, senderId, '   ');
+	equal('a blank name is stored as null', cleared?.name, null);
+	const afterClear = await listContacts(db);
+	equal(
+		'a cleared name sorts and renders by address again',
+		afterClear.find((row) => row.id === senderId)?.name,
+		null
+	);
+
+	// An id that is gone is the caller's problem to report (the route 404s), not
+	// a thrown error here.
+	equal(
+		'returns undefined for an unknown contact id',
+		await updateContactName(db, `${stamp}-nonexistent`, 'Nobody'),
+		undefined
 	);
 } finally {
 	if (emailIds.length > 0) {

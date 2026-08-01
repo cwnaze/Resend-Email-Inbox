@@ -9,9 +9,9 @@
 	 */
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ContactRow from './ContactRow.svelte';
-	import type { PageData } from './$types';
+	import type { ActionData, PageData } from './$types';
 
-	let { data }: { data: PageData } = $props();
+	let { data, form }: { data: PageData; form: ActionData } = $props();
 </script>
 
 <section class="mx-auto flex min-h-full w-full max-w-3xl flex-col">
@@ -28,7 +28,17 @@
 		<ul class="flex flex-col">
 			{#each data.contacts as contact (contact.id)}
 				<li>
-					<ContactRow {contact} />
+					<!--
+						`editing` and the error both come from the server: the open row is
+						`?edit=<id>` and the message is the `fail()` payload, keyed by id so a
+						failed save can only ever annotate the row it was for.
+					-->
+					<ContactRow
+						{contact}
+						editing={data.editingId === contact.id}
+						maxNameLength={data.maxNameLength}
+						errorMessage={form?.id === contact.id ? form.message : null}
+					/>
 				</li>
 			{/each}
 		</ul>

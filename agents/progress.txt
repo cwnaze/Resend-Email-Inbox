@@ -40,6 +40,11 @@
 - An action that answers a non-`use:enhance`d form should `redirect(303, …)` rather than return data: without it the reader is left on the action's own POST URL (`?/theAction` in the address bar, a refresh re-submitting the mutation).
 - A denormalized aggregate that more than one mutation can change ("all children are X") gets **one** recompute helper both mutations call — `markThreadRead` and `softDeleteThreadEmail` share `recomputeThreadIsRead`, because two copies of the same `not exists` are two things to keep in step.
 - A destructive mutation keyed by a child id takes the **parent** id too and puts it in the `where`, not just in a lookup: holding a child id is not permission to act on it through another parent's URL. Make "wrong parent", "unknown id" and "already gone" one indistinguishable answer, and make the mutation idempotent — a double-submitted form must not 404 for something the owner really did delete.
+- An **inline edit form in a list** belongs in the URL (`?edit=<id>`), not in component state: the edit affordance stays a plain link, the form is server-rendered (works with JS off, survives a refresh), and a `fail()` can re-render with the form still open. It only holds if the form's action carries the param too (`?/rename&edit=<id>`) — a form action's query replaces the page's.
+- A `fail()` payload for a *per-row* form must carry the row id, and the page must only render the message on the matching row — otherwise one row's validation error annotates every open form on the page.
+- Seed an edit field from the **stored** column, never from the load's derived display value: `displayName`'s "fall back to the address" is a rendering, and pre-filling with it turns "this has no name" into "this is named after its own address" on the first save.
+- A flag that *protects* a value from being overwritten by an automated path (`auto_created`) has to be cleared in the **same statement** that writes the value. Splitting them leaves a window — and a manual edit that doesn't clear it looks like it worked and silently reverts on the next ingest. Assert the pair (edit → run the automated path → value survives), not the write alone.
+
 
 ## Progress Log
 
@@ -680,4 +685,19 @@ Reviewed the diff and re-exercised the feature. One real bug, found by asking wh
   - The shell's top bar puts `ml-auto` on exactly one item (now the Contacts link) to
     push the whole right-hand group over; adding a link means moving it, not adding a
     second one.
+---
+
+## [2026-07-31] - US-I02
+- Edit a contact: each `/contacts` row gets an Edit link opening an inline rename form; saving writes `contacts.name` and sets `auto_created = false`.
+- `updateContactName` in `src/lib/server/db/contacts.ts` — one statement for both columns, plus an exported `MAX_CONTACT_NAME_LENGTH` (200) shared by the input's `maxlength` and the action's own check. A blank name stores `null`, not `''`. Returns `undefined` for an unknown id; the route 404s.
+- `rename` form action on `src/routes/(app)/contacts/+page.server.ts`, calling `validateSession` itself, ending in `redirect(303, '/contacts')`. The load now also returns `editingId` (from `?edit=`), `maxNameLength`, and each contact's raw `name` alongside `displayName`.
+- `ContactRow.svelte` renders either the read row (with an Edit link) or the form; `+page.svelte` passes `editing`/`errorMessage` down, the latter keyed by contact id.
+- `verify-contacts-list.mts` extended from 11 to 18 live-DB checks, including the FR-2 round trip: rename → `upsertAutoContact` with a different display name → the manual name survives.
+- Files changed: src/lib/server/db/contacts.ts, src/lib/server/db/verify-contacts-list.mts, src/routes/(app)/contacts/{+page.server.ts,+page.svelte,ContactRow.svelte}, docs/notes/contacts.md, CLAUDE.md, agents/prd.json, agents/progress.txt, docs/demos/US-I02.md (new).
+- Verified: `npm run check` 0 errors, `npm run lint` clean, 18/18 live-DB checks, `showboat verify docs/demos/US-I02.md` exit 0 (~90s, genuinely re-runs the dev server + rodney blocks). In the browser: nameless contact renamed and re-sorted, `auto_created` 1 → 0 in the DB, a 201-character name rejected inline with the form still open and nothing written, and an anonymous POST answered 401 with the row unchanged.
+- **Learnings for future iterations:**
+  - `npm run lint` was already failing on `main` when this story started (`docs/notes/contacts.md` unformatted, merged that way by US-I01). Run `npm run lint` *before* touching anything, so a pre-existing failure isn't mistaken for your own.
+  - `rodney js` takes an **expression**, not statements — `const x = …` is a syntax error. Wrap multi-statement snippets in `(()=>{ … })()`.
+  - `tsx -e` can't do top-level await (CJS output), and a `.mts` file outside the repo can't resolve the repo's `node_modules`. A throwaway DB probe has to be a temp file *inside* the repo root, run with `node --env-file=.env node_modules/.bin/tsx`.
+  - The demo fixture's contact ids are fresh UUIDs per seed, so a reproducible browser block must find the row by its address, and must `sed` the uuid out of any captured href/action or `showboat verify` fails on the next run.
 ---
