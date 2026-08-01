@@ -755,3 +755,42 @@ Reviewed the diff and re-exercised the feature. One real bug, found by asking wh
   - An affordance for creating the *first* item has to live outside the empty-state
     branch, or the page is unusable in exactly the state the empty state is describing.
 ---
+
+## 2026-08-01 - US-I04 (Contact autocomplete in Compose)
+- **No source change.** Every acceptance criterion was already met by earlier stories:
+  US-H01 built `RecipientField.svelte` (a hand-rolled ARIA combobox over one plain
+  comma-separated input) and the pure `suggestContacts`/`activeEntry`/`replaceActiveEntry`
+  in `lib/compose/addresses.ts`; the compose `load` has been feeding it
+  `listContactsForSuggestions` since the same story; US-I01–I03 supplied the contacts.
+  The same component is mounted for To *and* Cc, so Cc autocompletes because it is the
+  same field. The branch is the verification, not an implementation.
+- Files changed: `docs/demos/US-I04.md` (new), `docs/notes/compose.md`, `agents/prd.json`,
+  `agents/progress.txt`.
+- Verified: `npm run check` 0 errors, `npm run lint` clean, 102/102
+  `verify-compose-addresses.mts` checks, `showboat verify docs/demos/US-I04.md` exit 0.
+  In a real browser against the live DB: `dem` matches all three fixture contacts on
+  address; `cas` surfaces `dana@f03-demo.example` on its **name** alone ("Dana Casey")
+  and ranks it below the address-prefix hit; picking a suggestion writes the *email*, not
+  the display name; Cc behaves identically; a second entry typed after a committed
+  address still suggests (caret-targeted); an address already in the field is not
+  re-offered; the URL stays `/compose` throughout.
+- **Learnings for future iterations:**
+  - **A story can arrive already done.** Check whether the criteria are met before
+    building anything — US-I04's whole content was latent in US-H01. The right output is
+    then a demo that *proves* it plus a note saying where the implementation actually
+    lives, not a second implementation to make the branch look busy. Marking it passing
+    on a code read alone would be the failure the review loop exists to catch.
+  - **A browser demo that reads the live DB must scope its assertions to the fixture.**
+    The first draft of US-I04's demo captured a real contact (`casey@caseynazelrod.com`)
+    because it matched the fragment being typed — that would have failed
+    `showboat verify` months later over a contact that merely arrived by mail. Filter
+    listings to the `@f03-demo.example` domain and address a clicked option **by its text,
+    not its index**, so a real row sorting above the fixture can't move it. Same class of
+    nondeterminism as the svelte-check timestamp, and less obvious.
+  - `RecipientField` options listen for **`mousedown`** (the input's `blur` would
+    otherwise close the popup before a `click` landed), so driving one from JS needs a
+    dispatched `mousedown`, not just `.click()`.
+  - Editing `agents/prd.json` with `json.dump` rewrites escapes across the **whole file**
+    (`ensure_ascii` either way) and buries a two-line change in a 28-line diff. Use a
+    targeted string edit.
+---

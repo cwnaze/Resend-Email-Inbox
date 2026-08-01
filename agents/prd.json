@@ -525,8 +525,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 35,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Already satisfied before this story: US-H01's RecipientField.svelte (the same component mounted for both To and Cc) over suggestContacts, fed by listContactsForSuggestions; US-I01-I03 supplied the contacts worth suggesting. No source change — the branch is the verification, docs/demos/US-I04.md."
     }
   ]
 }
