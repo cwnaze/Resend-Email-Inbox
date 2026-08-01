@@ -1,6 +1,7 @@
 import {
 	DeleteObjectCommand,
 	GetObjectCommand,
+	HeadObjectCommand,
 	PutObjectCommand,
 	S3Client
 } from '@aws-sdk/client-s3';
@@ -91,6 +92,56 @@ export async function deleteFromR2(key: string): Promise<void> {
 			Key: key
 		})
 	);
+}
+
+/**
+ * What the bucket says an object actually is (US-H05).
+ *
+ * Used on the send path to re-derive a browser-uploaded attachment's size and
+ * content type from R2 rather than from the form that named its key: the size is
+ * what the 25 MB limit is enforced against, so taking the client's word for it
+ * would make the limit advisory.
+ */
+export async function headR2Object(
+	key: string
+): Promise<{ sizeBytes: number; contentType: string | null }> {
+	const response = await client.send(
+		new HeadObjectCommand({
+			Bucket: bucketName,
+			Key: key
+		})
+	);
+	return {
+		sizeBytes: response.ContentLength ?? 0,
+		contentType: response.ContentType ?? null
+	};
+}
+
+/**
+ * A time-limited presigned **PUT** URL, so the browser can upload an attachment
+ * straight into the private bucket (US-H05).
+ *
+ * Direct-to-R2 rather than posting the bytes through a form action, because the
+ * app is deployed on Vercel and a serverless function's request body is capped
+ * around 4.5 MB — a 25 MB attachment could never reach the action at all. The
+ * key is minted server-side (`compose/uploads`), never supplied by the caller.
+ *
+ * `contentType` is part of the signature, so the browser's PUT must send exactly
+ * that `Content-Type` header or R2 rejects it. That is deliberate: it pins the
+ * stored object's type to the one the endpoint approved.
+ */
+export async function getR2SignedUploadUrl(
+	key: string,
+	contentType: string,
+	expiresInSeconds: number = DEFAULT_SIGNED_URL_EXPIRY_SECONDS
+): Promise<string> {
+	const command = new PutObjectCommand({
+		Bucket: bucketName,
+		Key: key,
+		ContentType: contentType
+	});
+
+	return getSignedUrl(client, command, { expiresIn: expiresInSeconds });
 }
 
 export type SignedDownloadUrlOptions = {

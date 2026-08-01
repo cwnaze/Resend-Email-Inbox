@@ -27,6 +27,14 @@ import {
 	replyRecipients,
 	replySubject
 } from './reply.ts';
+import {
+	MAX_ATTACHMENT_TOTAL_BYTES,
+	composeAttachmentFilename,
+	isAttachmentTotalTooLarge,
+	isPendingAttachmentKey,
+	parsePendingAttachments,
+	unsettledAttachments
+} from './attachments.ts';
 
 let passed = 0;
 let failed = 0;
@@ -392,6 +400,119 @@ check(
 		body: forwardBody({ sender: 'A', timestamp: 't', subject: 'Lunch?', to: '', body: 'hi' })
 	}).valid,
 	true
+);
+
+// Attachment rules (US-H05). Pure, and the reason they are pure is that the
+// browser gates the picker on the same limit the send action re-checks — with
+// the sharpening that the *sizes* it re-checks come from R2, not from the form.
+console.log('\nattachments (US-H05)');
+check(
+	'a key this app minted is accepted',
+	isPendingAttachmentKey('outbound/pending/1e6a2f34-5b7c-4d8e-9f01-23456789abcd/report.pdf'),
+	true
+);
+check(
+	'a key with no filename segment is still a key (a name can slug to nothing)',
+	isPendingAttachmentKey('outbound/pending/1e6a2f34-5b7c-4d8e-9f01-23456789abcd/'),
+	true
+);
+check(
+	'a stored attachment key is NOT — a send cannot be talked into mailing an existing message’s file',
+	isPendingAttachmentKey('outbound/9e1/att-1-report.pdf'),
+	false
+);
+check('nor is an inbound one', isPendingAttachmentKey('inbound/re_123/att-1-report.pdf'), false);
+check(
+	'nor is a traversal out of the prefix',
+	isPendingAttachmentKey('outbound/pending/1e6a2f34-5b7c-4d8e-9f01-23456789abcd/../../secret'),
+	false
+);
+check(
+	'nor is a non-uuid segment',
+	isPendingAttachmentKey('outbound/pending/anything/report.pdf'),
+	false
+);
+
+check('a filename keeps its own name', composeAttachmentFilename('Report Q3.pdf'), 'Report Q3.pdf');
+check(
+	'a path is reduced to its last segment',
+	composeAttachmentFilename('../../etc/passwd'),
+	'passwd'
+);
+check('control characters are stripped', composeAttachmentFilename('re port.pdf'), 'report.pdf');
+check(
+	'a name that reduces to nothing gets a placeholder',
+	composeAttachmentFilename('  '),
+	'attachment'
+);
+check('so does a bare dot-dot', composeAttachmentFilename('..'), 'attachment');
+
+const goodKey = 'outbound/pending/1e6a2f34-5b7c-4d8e-9f01-23456789abcd/report.pdf';
+check('an empty field parses to nothing', parsePendingAttachments(''), []);
+check('so does malformed JSON, rather than throwing', parsePendingAttachments('{['), []);
+check('so does a JSON value that is not an array', parsePendingAttachments('{"key":"x"}'), []);
+check(
+	'a well-formed entry survives with its name sanitized',
+	parsePendingAttachments(
+		JSON.stringify([{ key: goodKey, filename: '../report.pdf', sizeBytes: 12 }])
+	),
+	[{ key: goodKey, filename: 'report.pdf', sizeBytes: 12 }]
+);
+check(
+	'an entry naming a key this app did not mint is dropped',
+	parsePendingAttachments(
+		JSON.stringify([{ key: 'inbound/re_1/att-1', filename: 'x', sizeBytes: 1 }])
+	),
+	[]
+);
+check(
+	'the same key twice is attached once — two rows on one object would alias',
+	parsePendingAttachments(
+		JSON.stringify([
+			{ key: goodKey, filename: 'a.pdf', sizeBytes: 1 },
+			{ key: goodKey, filename: 'b.pdf', sizeBytes: 1 }
+		])
+	).length,
+	1
+);
+check(
+	'a nonsense size is clamped to zero rather than poisoning the running total',
+	parsePendingAttachments(JSON.stringify([{ key: goodKey, filename: 'a.pdf', sizeBytes: -5 }]))[0]
+		.sizeBytes,
+	0
+);
+check(
+	'the total is the sum, and the limit is exclusive of nothing below it',
+	isAttachmentTotalTooLarge([{ sizeBytes: MAX_ATTACHMENT_TOTAL_BYTES - 1 }, { sizeBytes: 1 }]),
+	false
+);
+check(
+	'…and one byte over is over',
+	isAttachmentTotalTooLarge([{ sizeBytes: MAX_ATTACHMENT_TOTAL_BYTES }, { sizeBytes: 1 }]),
+	true
+);
+
+const row = (id: string, status: 'uploading' | 'ready' | 'failed', key: string | null) => ({
+	id,
+	filename: `${id}.pdf`,
+	sizeBytes: 1,
+	key,
+	status
+});
+check(
+	'a ready row is settled and does not gate Send',
+	unsettledAttachments([row('a', 'ready', goodKey)]),
+	[]
+);
+check(
+	'an in-flight upload gates Send',
+	unsettledAttachments([row('a', 'uploading', null)]).length,
+	1
+);
+check(
+	'and so does a FAILED one — it has no key either, so sending would list a file the mail does not carry',
+	unsettledAttachments([row('a', 'ready', goodKey), row('b', 'failed', null)]).map((i) => i.id),
+	['b']
 );
 
 console.log(`\n${passed}/${passed + failed} checks passed`);

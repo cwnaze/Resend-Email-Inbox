@@ -32,13 +32,21 @@ import { getAttachmentsByEmailId } from '$lib/server/db/attachments';
 import { getOutboundSender, sendOutboundEmail } from '$lib/server/email/resend';
 import { newOutboundMessageId } from '$lib/server/outbound/message-id';
 import {
-	ForwardedAttachmentsTooLargeError,
+	AttachmentsTooLargeError,
 	loadForwardedAttachments,
-	storeForwardedAttachments,
-	MAX_FORWARDED_ATTACHMENT_BYTES
+	storeOutboundAttachments,
+	MAX_ATTACHMENT_TOTAL_BYTES,
+	type OutboundAttachment
 } from '$lib/server/outbound/attachments';
+import {
+	discardPendingAttachments,
+	loadedTotalBytes,
+	loadPendingAttachments,
+	pendingUploadId
+} from '$lib/server/outbound/uploads';
+import { parsePendingAttachments, type PendingAttachment } from '$lib/compose/attachments';
 import { storeSentEmail } from '$lib/server/outbound/store';
-import { deleteFromR2, downloadFromR2, uploadToR2 } from '$lib/server/r2';
+import { deleteFromR2, downloadFromR2, headR2Object, uploadToR2 } from '$lib/server/r2';
 
 /**
  * One shape for every outcome, success and failure alike.
@@ -52,6 +60,14 @@ import { deleteFromR2, downloadFromR2, uploadToR2 } from '$lib/server/r2';
 type ComposeResult = {
 	/** Always echoed, so no failure path can lose typed content (FR-4). */
 	draft: ComposeDraft;
+	/**
+	 * The files the owner had picked, echoed back for the same reason the draft is
+	 * (US-H05). The objects are already in R2 and the form is a plain POST, so
+	 * without this a refused send would leave the browser re-rendering an empty
+	 * attachment list next to uploads it can no longer name — the owner would have
+	 * to pick every file again. Cleared on success, like the draft.
+	 */
+	attachments?: PendingAttachment[];
 	errors?: ComposeValidation['errors'];
 	/** The message was handed to Resend and accepted (US-H02). */
 	sent?: boolean;
@@ -183,7 +199,11 @@ export const load: PageServerLoad = async ({ url }) => {
 						attachments: attachments.map((attachment) => ({
 							id: attachment.id,
 							filename: attachment.filename,
-							size: formatFileSize(attachment.sizeBytes)
+							size: formatFileSize(attachment.sizeBytes),
+							// The raw number too, not just the rendered one: these bytes
+							// count against the same per-message limit the picker enforces
+							// (US-H05), so the picker has to be able to add them up.
+							sizeBytes: attachment.sizeBytes
 						}))
 					}
 				: null
@@ -191,7 +211,7 @@ export const load: PageServerLoad = async ({ url }) => {
 };
 
 /** Reads one compose field out of a submitted form, tolerating its absence. */
-function field(form: FormData, name: keyof ComposeDraft): string {
+function field(form: FormData, name: keyof ComposeDraft | 'attachments'): string {
 	const value = form.get(name);
 	return typeof value === 'string' ? value : '';
 }
@@ -244,9 +264,19 @@ export const actions = {
 			subject: field(form, 'subject'),
 			body: field(form, 'body')
 		};
+		// The files the browser uploaded to R2 before this submit (US-H05). Only the
+		// keys and names survive the parse; the sizes and content types come from R2
+		// itself below, so nothing the form claims about them can widen the limit.
+		// Echoed on every return path, exactly like the draft.
+		const pending = parsePendingAttachments(field(form, 'attachments'));
 
 		const session = await validateSession(db, cookies);
-		if (!session) return fail(401, { draft, error: 'Not authenticated.' } satisfies ComposeResult);
+		if (!session)
+			return fail(401, {
+				draft,
+				attachments: pending,
+				error: 'Not authenticated.'
+			} satisfies ComposeResult);
 
 		// The reply target comes from the *same* place the load read it — the query
 		// string, which the page's form action carries across the POST (see the
@@ -264,32 +294,55 @@ export const actions = {
 
 		const validation = validateComposeDraft(draft);
 		if (!validation.valid) {
-			return fail(400, { draft, errors: validation.errors } satisfies ComposeResult);
+			return fail(400, {
+				draft,
+				attachments: pending,
+				errors: validation.errors
+			} satisfies ComposeResult);
 		}
 
-		// The forwarded files are read *before* the send and a failure refuses it,
-		// which is the opposite of how attachments are treated everywhere else in
-		// this app. Mail cannot be un-sent: a forward whose attachment quietly went
-		// missing is a message that says "see attached" and doesn't, and the owner
-		// has no way to know. Failing now costs a retry with the draft still on
-		// screen (FR-4).
-		let forwardedAttachments: Awaited<ReturnType<typeof loadForwardedAttachments>> = [];
-		if (forwarding) {
-			try {
-				forwardedAttachments = await loadForwardedAttachments(db, parent.id, {
-					download: downloadFromR2
-				});
-			} catch (error) {
-				console.error('forward could not read its attachments:', parent.id, error);
-				const tooLarge = error instanceof ForwardedAttachmentsTooLargeError;
-				return fail(tooLarge ? 400 : 502, {
-					draft,
-					error: tooLarge
-						? `These attachments are too large to forward (limit ${formatFileSize(MAX_FORWARDED_ATTACHMENT_BYTES)}).`
-						: 'Could not read this message’s attachments. Nothing was sent — try again.'
-				} satisfies ComposeResult);
+		// Every file this message will carry is read into memory *before* the send,
+		// and a failure to read any of them refuses it — the opposite of how
+		// attachments are treated everywhere else in this app, and true of both
+		// sources. Mail cannot be un-sent: a message whose attachment quietly went
+		// missing is one that says "see attached" and doesn't, and the owner has no
+		// way to know. Failing now costs a retry with the draft, and the uploads,
+		// still on screen (FR-4).
+		//
+		// Picked files first, so their real sizes (from R2, not from the form) are
+		// known when the forwarded set is checked against the same *per-message*
+		// limit: the ceiling is a property of the message, not of either source.
+		let pickedAttachments: OutboundAttachment[];
+		let forwardedAttachments: OutboundAttachment[] = [];
+		try {
+			pickedAttachments = await loadPendingAttachments(pending, {
+				head: headR2Object,
+				download: downloadFromR2
+			});
+			if (forwarding) {
+				forwardedAttachments = await loadForwardedAttachments(
+					db,
+					parent.id,
+					{ download: downloadFromR2 },
+					loadedTotalBytes(pickedAttachments)
+				);
 			}
+		} catch (error) {
+			console.error('send could not read its attachments:', parent?.id ?? null, error);
+			const tooLarge = error instanceof AttachmentsTooLargeError;
+			return fail(tooLarge ? 400 : 502, {
+				draft,
+				attachments: pending,
+				error: tooLarge
+					? `These attachments are too large to send (limit ${formatFileSize(MAX_ATTACHMENT_TOTAL_BYTES)}).`
+					: 'Could not read this message’s attachments. Nothing was sent — try again.'
+			} satisfies ComposeResult);
 		}
+
+		// Forwarded first, then the owner's own files, so a forward's recipient sees
+		// the original message's attachments in their original order with the new
+		// ones appended.
+		const outboundAttachments = [...forwardedAttachments, ...pickedAttachments];
 
 		// The recipients `validateComposeDraft` already parsed, not a second parse of
 		// the raw fields: two parses are two rules waiting to disagree, and `cc` here
@@ -319,7 +372,7 @@ export const actions = {
 				text: draft.body,
 				messageId,
 				inReplyTo,
-				attachments: forwardedAttachments.map((attachment) => ({
+				attachments: outboundAttachments.map((attachment) => ({
 					filename: attachment.filename,
 					contentType: attachment.contentType,
 					content: attachment.bytes
@@ -333,6 +386,7 @@ export const actions = {
 			console.error('compose send failed:', error);
 			return fail(502, {
 				draft,
+				attachments: pending,
 				error: 'Sending failed. Your message is still here — try again.'
 			} satisfies ComposeResult);
 		}
@@ -363,19 +417,39 @@ export const actions = {
 
 			// Deliberately outside `storeSentEmail`'s transaction and after it: this
 			// is R2 work, and an upload cannot be rolled back by a database rollback.
-			// Best-effort, per `storeForwardedAttachments` — the mail is already out,
+			// Best-effort, per `storeOutboundAttachments` — the mail is already out,
 			// so a failed copy costs the owner's own record of a file the recipient
 			// already has, and it must not turn a delivered message into an error.
 			let warning: string | undefined;
-			if (forwardedAttachments.length > 0) {
-				const { failed } = await storeForwardedAttachments(db, email.id, forwardedAttachments, {
+			let failedSources: string[] = [];
+			if (outboundAttachments.length > 0) {
+				const { failed } = await storeOutboundAttachments(db, email.id, outboundAttachments, {
 					upload: (key, body, contentType) => uploadToR2(key, body, contentType),
 					remove: deleteFromR2
 				});
+				failedSources = failed;
 				if (failed.length > 0) {
 					warning = 'Delivered with its attachments, but your copy of them could not be saved.';
 				}
 			}
+
+			// A picked file now exists twice: under the pending key the browser
+			// uploaded to, and under this message's own key (`outboundObjectKey`
+			// copies rather than aliases, so one message's delete can never empty
+			// another's file). The pending copy has served its purpose.
+			//
+			// **Except when the copy failed.** Then the pending object is the only
+			// remaining copy of a file the recipient already has, so it is left in
+			// place: leaking an object under the prefix that exists to hold unclaimed
+			// uploads is cheap, and deleting the owner's last copy of their own
+			// attachment is not. The rest is best-effort and never reported — the mail
+			// is already out.
+			await discardPendingAttachments(
+				pending
+					.map((attachment) => attachment.key)
+					.filter((key) => !failedSources.includes(pendingUploadId(key))),
+				deleteFromR2
+			);
 
 			return { draft, sent: true, threadId: email.threadId, warning } satisfies ComposeResult;
 		} catch (error) {

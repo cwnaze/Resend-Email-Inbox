@@ -16,3 +16,37 @@
 - The bucket is **private** — there is no `R2_PUBLIC_URL_BASE`/static public URL. Any place the app needs to let the browser fetch/download an object must call `getR2SignedDownloadUrl` on demand rather than storing a permanent URL. This affects the `attachments` table (stores `r2_object_key`, not a public URL) and any UI that lists/downloads attachments. US-G03 is the worked example: `GET /inbox/[threadId]/attachments/[attachmentId]` presigns per click and 302s the browser to R2, and the object key never reaches the client.
 - Required env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` (read via `$env/dynamic/private`, same pattern as the Turso vars). The module throws at import time if any are missing.
 - Only import `src/lib/server/r2` from server-only code (`+page.server.ts`, `+server.ts`, `src/lib/server/**`) — same rule as the `db` client.
+
+## R2 bucket CORS (US-H05)
+
+The compose attachment picker uploads **directly from the browser** to R2 over a presigned PUT (Vercel's ~4.5 MB request-body cap makes posting a 25 MB file through a form action impossible). That is a cross-origin request, so the bucket must carry a CORS policy or the browser refuses the upload before it starts — the failure looks like an opaque network error in the console and `CORS not configured for this bucket` on an `OPTIONS` probe.
+
+`src/lib/server/r2/set-cors.mts` is the single description of the policy and can be run against a bucket whose credentials allow it:
+
+```
+node --env-file=.env node_modules/.bin/tsx src/lib/server/r2/set-cors.mts
+```
+
+**It will 403 with the credentials in this repo.** `R2_ACCESS_KEY_ID` is an _Object_ Read & Write token; `PutBucketCors` needs _Admin_ Read & Write. The policy is therefore applied by hand in the Cloudflare dashboard (R2 → bucket → Settings → CORS Policy), and the script is kept as the authoritative record of what it should say:
+
+```json
+[
+	{
+		"AllowedOrigins": ["http://localhost:5173", "https://mail.caseynazelrod.com"],
+		"AllowedMethods": ["PUT"],
+		"AllowedHeaders": ["content-type"],
+		"MaxAgeSeconds": 3600
+	}
+]
+```
+
+Never `*` for the origins. `PUT` only — downloads are presigned GETs the browser _navigates_ to (a 302 out of the download endpoint), which is not a CORS request at all. `content-type` must be allowed because the presigned PUT signs it, so the preflight fails without it.
+
+Verify from a shell without any credentials:
+
+```sh
+curl -s -i -X OPTIONS "https://<account>.r2.cloudflarestorage.com/<bucket>/probe" \
+  -H "Origin: http://localhost:5173" \
+  -H "Access-Control-Request-Method: PUT" \
+  -H "Access-Control-Request-Headers: content-type"
+```
