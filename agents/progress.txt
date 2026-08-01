@@ -703,3 +703,55 @@ Reviewed the diff and re-exercised the feature. One real bug, found by asking wh
   - `showboat pop` removes the entry but leaves its copied-in screenshot on disk. After re-recording a block, grep the doc for the image filenames it still references and `git rm` the ones that no longer appear.
   - Self-review caught the real bug here: the first cut kept the form open on `fail()` but re-seeded the input from the *stored* name, so the rejected text vanished. Whenever a form action returns `fail()` on a non-enhanced form, check what the field re-renders from — the "form stays open" half is easy to verify and easy to mistake for the whole thing.
 ---
+
+## [2026-08-01] - US-I03
+- Add a contact by hand: `/contacts` gets an "Add contact" affordance opening an inline
+  email + name form; saving inserts with `auto_created = false`, and a duplicate address
+  (case-insensitive) is rejected inline with an error naming the existing contact and a
+  link to its edit form.
+- `createContact` in `src/lib/server/db/contacts.ts` — `onConflictDoNothing` + re-read, so
+  a duplicate is a **return value** (`{created: false, contact}`) rather than a throw, plus
+  an exported `MAX_CONTACT_EMAIL_LENGTH` (254).
+- `add` form action on `(app)/contacts/+page.server.ts`, calling `validateSession` itself,
+  validating the address with `isValidAddress` from `$lib/compose/addresses` (the compose
+  field's rule, not a second one), echoing **both** fields back on every rejection, and
+  ending in `redirect(303, '/contacts')`. The load also returns `adding` (from `?add`) and
+  `maxEmailLength`.
+- NEW `AddContactForm.svelte`, rendered above the list and outside the empty-state branch.
+- Both actions' `fail()` payloads now carry an `intent` discriminant; `+page.svelte`
+  narrows on it before reading any other field.
+- `verify-contacts-list.mts` extended from 18 to 32 live-DB checks.
+- Files changed: src/lib/server/db/{contacts.ts,verify-contacts-list.mts},
+  src/routes/(app)/contacts/{+page.server.ts,+page.svelte,AddContactForm.svelte(new)},
+  docs/notes/contacts.md, CLAUDE.md, agents/prd.json, agents/progress.txt,
+  docs/demos/US-I03.md (new).
+- Verified: `npm run check` 0 errors, `npm run lint` clean, 32/32 live-DB checks,
+  `showboat verify docs/demos/US-I03.md` exit 0. In the browser: a contact added by hand
+  appears in the re-sorted list at 0 messages; `CASEY@F03-DEMO.EXAMPLE` rejected against
+  the stored `casey@f03-demo.example` with both fields kept and a link to that row's edit
+  form; `not-an-address` rejected; an anonymous POST answered 401 — and a DB dump after
+  all three shows the fixture's contacts unchanged, i.e. nothing was written.
+- **Learnings for future iterations:**
+  - **A page with more than one form action needs a discriminant on its `fail()`
+    payloads.** `ActionData` is the *union* of every action's failure, so TypeScript
+    rejects reading a field that isn't in all members, and matching on a shared field
+    (`form?.id === contact.id`) silently mis-routes the moment a second action returns a
+    payload with that key. Add `intent: 'x' as const` and narrow once at the top of the
+    component.
+  - **A duplicate check must be the insert, not a `select` before it.** The unique index
+    is the only arbiter under concurrency; `onConflictDoNothing().returning()` +
+    re-read-on-empty gives both the rejection *and* the conflicting row the error needs to
+    name, in one path that can't race.
+  - `contacts.email`'s unique index is **case-sensitive** — it only rejects a
+    differently-cased duplicate because `normalizeEmail` runs on every write. Any new
+    write path into `contacts` has to call it or the index stops meaning anything.
+  - `npm run check`'s svelte-check output starts every line with a **run timestamp**, so
+    capturing it raw in a showboat block breaks `showboat verify` on the next run.
+    `grep -o "COMPLETED.*"` is enough.
+  - Multi-line `rodney` invocations passed through `showboat exec` are two levels of shell
+    quoting deep. Write the block to a file in the scratchpad, dry-run it, then pass it in
+    with `showboat exec … bash "$(cat file)"` — building the quoting inline is where the
+    time goes.
+  - An affordance for creating the *first* item has to live outside the empty-state
+    branch, or the page is unusable in exactly the state the empty state is describing.
+---

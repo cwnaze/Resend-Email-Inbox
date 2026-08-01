@@ -3,7 +3,7 @@
 Feature PRD: `tasks/prd-feature-contacts.md`. The `contacts` table itself is written by
 the inbound webhook and the send path (`upsertAutoContact`, see `docs/notes/inbound.md`
 and `docs/notes/compose.md`); this note covers `/contacts` itself — the read side added
-by US-I01 and the rename added by US-I02.
+by US-I01, the rename added by US-I02 and the manual add by US-I03.
 
 ## `listContacts` (`src/lib/server/db/contacts.ts`)
 
@@ -34,8 +34,9 @@ contact, with the correspondence rule in the join condition (`CORRESPONDS_WITH_C
 
 `src/lib/server/db/verify-contacts-list.mts` is the smoke test for all of the above
 against the live DB (case folding, Cc, Bcc, soft-delete, no-mail contacts) **and** for
-`updateContactName` below. **Extend it** rather than adding another script when US-I03
-adds a write helper here — the SQL is the part no typecheck covers.
+`updateContactName` and `createContact` below — 32 checks. **Extend it** rather than
+adding another script when a write helper lands here: the SQL, the unique index and the
+`auto_created` round trips are the parts no typecheck covers.
 
 ## `updateContactName` (US-I02)
 
@@ -56,6 +57,54 @@ One statement setting `name` _and_ `auto_created = false`, deliberately not two 
 - `MAX_CONTACT_NAME_LENGTH` (200) is exported from the same module because the form's
   `maxlength` and the action's own check have to be one number. The action re-checks —
   `maxlength` is a browser courtesy, not the rule.
+
+## `createContact` (US-I03)
+
+Adds an address by hand, before any mail from it exists — which is the point:
+`upsertAutoContact` only ever runs on mail that already happened, so without this
+there is no way to get an address into the compose autocomplete ahead of the
+first message.
+
+- **`auto_created = false` from birth**, for the same reason `updateContactName`
+  clears it. The owner typed this name; the first delivery from the address must
+  not overwrite it. `verify-contacts-list.mts` asserts that round trip (add →
+  auto-upsert with a different display name → the typed name survives), the same
+  way it does for the rename.
+- **A duplicate is a return value, not a throw.** `onConflictDoNothing` +
+  re-read: the conflicting row is what the route's error has to _name_ ("points
+  to the existing contact"), and a genuine race loses harmlessly instead of
+  500ing. A pre-read `getContactByEmail` would still race — the unique index is
+  the only real arbiter, and `normalizeEmail` on write is what makes a
+  differently-cased address hit it at all (the index is case-sensitive).
+- `MAX_CONTACT_EMAIL_LENGTH` (254, the RFC 5321 ceiling) is exported beside
+  `MAX_CONTACT_NAME_LENGTH` for the same reason: the form's `maxlength` and the
+  action's check are one number.
+- **The action validates the address with `isValidAddress` from
+  `$lib/compose/addresses`** — deliberately the compose field's rule, not a
+  second one. A contact this page accepted but Send rejected would be a contact
+  the owner cannot use.
+
+## Adding a row
+
+`?add` opens the form, the same URL-state pattern as `?edit=<id>`, with the same
+consequences (plain-link affordance, works with JS off, survives a refresh, still
+open after a `fail()` because the action posts to **`?/add&add=1`**).
+
+- `AddContactForm.svelte` renders **above the list and outside the empty-state
+  branch** — adding the first contact is exactly the case the empty state
+  describes, so the affordance has to exist when there is nothing else on the
+  page.
+- Every rejection echoes back **both** fields. This form has two, and blanking
+  the good one would make fixing a typo in the other mean retyping it.
+- A duplicate rejection also carries `conflictId`, which the form turns into an
+  `?edit=<id>` link on the existing row — the useful next move when the contact
+  turns out to already exist under another name.
+- Both actions' `fail()` payloads carry an **`intent` discriminant** (`'add'` /
+  `'rename'`). `+page.svelte` receives the union of every action's failure, so
+  which form a message belongs to has to be decided before any other field is
+  read — TypeScript will not let a non-shared field be touched otherwise, and
+  sniffing for a key would silently mis-route a message once a third action
+  exists.
 
 ## Editing a row
 

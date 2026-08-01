@@ -1,5 +1,6 @@
 // Standalone smoke test for `/contacts`'s query helpers against the live Turso
-// DB: `listContacts` (US-I01) and `updateContactName` (US-I02).
+// DB: `listContacts` (US-I01), `updateContactName` (US-I02) and `createContact`
+// (US-I03).
 //
 // Run with:
 //   node --env-file=.env node_modules/.bin/tsx src/lib/server/db/verify-contacts-list.mts
@@ -20,7 +21,7 @@ import { inArray } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { contacts, emails, threads } from './schema.js';
 import type { Database } from './types.js';
-import { listContacts, updateContactName, upsertAutoContact } from './contacts.js';
+import { createContact, listContacts, updateContactName, upsertAutoContact } from './contacts.js';
 
 let failures = 0;
 let checks = 0;
@@ -242,6 +243,48 @@ try {
 		await updateContactName(db, `${stamp}-nonexistent`, 'Nobody'),
 		undefined
 	);
+
+	// --- createContact (US-I03) -------------------------------------------
+	//
+	// The parts no typecheck reaches: that the unique index really is what
+	// rejects a duplicate (and that `normalizeEmail` is what makes a *differently
+	// cased* address hit it at all), and that a hand-added contact shows up in
+	// `listContacts` at 0 messages rather than dropping out of the LEFT JOIN.
+	console.log('createContact — live DB');
+
+	const added = `Ivy.Manual@${domain.toUpperCase()}`;
+	const first = await createContact(db, { email: added, name: '  Ivy Manual  ' });
+	if (first.contact) contactIds.push(first.contact.id);
+	check('inserts a new address', first.created);
+	equal('normalizes the stored address', first.contact.email, added.toLowerCase());
+	equal('trims the stored name', first.contact.name, 'Ivy Manual');
+	check('a manual add is never auto_created', first.contact.autoCreated === false);
+
+	const dupe = await createContact(db, { email: added.toLowerCase(), name: 'Someone Else' });
+	check('a duplicate address is rejected, not inserted', !dupe.created);
+	equal('the rejection carries the existing contact', dupe.contact.id, first.contact.id);
+	equal('and does not overwrite its name', dupe.contact.name, 'Ivy Manual');
+
+	const dupeCased = await createContact(db, { email: `IVY.MANUAL@${domain}`, name: null });
+	check('the duplicate check is case-insensitive', !dupeCased.created);
+	equal('and finds the same row', dupeCased.contact.id, first.contact.id);
+
+	const nameless = await createContact(db, { email: `blank.name@${domain}`, name: '   ' });
+	if (nameless.contact) contactIds.push(nameless.contact.id);
+	equal('a blank name is stored as null', nameless.contact.name, null);
+
+	// The LEFT JOIN's whole reason for existing: a contact added before that
+	// address has ever sent or received anything still has to be a row.
+	const withManual = await listContacts(db);
+	const manualRow = withManual.find((row) => row.id === first.contact.id);
+	equal('a manually added contact lists at 0 messages', manualRow?.messageCount, 0);
+	equal('with no last-contacted stamp', manualRow?.lastContactedAt, null);
+
+	// FR: a manual add must survive the first delivery from that address, the
+	// same way a manual rename does — same flag, same regression.
+	const afterFirstDelivery = await upsertAutoContact(db, { email: added, name: 'ivy (phone)' });
+	check('a later auto-upsert does not overwrite a manual add', !afterFirstDelivery.nameUpdated);
+	equal('the hand-typed name survives', afterFirstDelivery.contact.name, 'Ivy Manual');
 } finally {
 	if (emailIds.length > 0) {
 		await db.delete(emails).where(inArray(emails.id, emailIds));
