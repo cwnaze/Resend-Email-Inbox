@@ -16,11 +16,17 @@ import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { inArray, like } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
-import { contacts, emails, threads } from '../db/schema.js';
+import { attachments, contacts, emails, threads } from '../db/schema.js';
 import type { Database } from '../db/types.js';
+import { getAttachmentsByEmailId } from '../db/attachments.js';
 import { getThreadById, getVisibleEmailById, listThreadEmails } from '../db/emails.js';
 import { listInboxThreads } from '../db/inbox.js';
 import { newOutboundMessageId, senderDomain } from './message-id.js';
+import {
+	forwardedObjectKey,
+	loadForwardedAttachments,
+	storeForwardedAttachments
+} from './attachments.js';
 import { storeSentEmail } from './store.js';
 
 let failures = 0;
@@ -94,6 +100,8 @@ const stamp = `outbound-verify-${process.pid}`;
 const recipientDomain = `${stamp}.example`;
 const threadIds: string[] = [];
 const emailIds: string[] = [];
+// Deleted before the emails they hang off — the remote connection enforces FKs.
+const attachmentIds: string[] = [];
 
 const sender = 'casey@caseynazelrod.com';
 const sentAt = new Date('2020-01-02T00:00:00.000Z');
@@ -275,11 +283,143 @@ try {
 		undefined
 	);
 
+	// Forwarded attachments (US-H04). R2 is stubbed — the point of the check is
+	// the re-association (which rows point at which new keys, and what happens
+	// when a copy fails), not the bucket, which `r2/verify.mts` covers.
+	console.log('forwarded attachments (US-H04)');
+	const bucket = new Map<string, Buffer>();
+	const sourceKey = `inbound/${stamp}/att-1-report.pdf`;
+	bucket.set(sourceKey, Buffer.from('%PDF-1.4 pretend'));
+	const [sourceAttachment] = await db
+		.insert(attachments)
+		.values([
+			{
+				emailId: first.email.id,
+				filename: 'Quarterly Report.pdf',
+				contentType: 'application/pdf',
+				sizeBytes: bucket.get(sourceKey)!.byteLength,
+				r2ObjectKey: sourceKey
+			}
+		])
+		.returning();
+	attachmentIds.push(sourceAttachment.id);
+
+	const loaded = await loadForwardedAttachments(db, first.email.id, {
+		download: async (key) => {
+			const bytes = bucket.get(key);
+			if (!bytes) throw new Error(`no such object ${key}`);
+			return bytes;
+		}
+	});
+	equal('every attachment of the forwarded message is read', loaded.length, 1);
+	equal('the filename travels unchanged', loaded[0].filename, 'Quarterly Report.pdf');
+	equal('so does the content type', loaded[0].contentType, 'application/pdf');
+	equal('the bytes are the stored object', loaded[0].bytes.toString(), '%PDF-1.4 pretend');
+	equal(
+		'a message with no attachments loads nothing',
+		(
+			await loadForwardedAttachments(db, second.email.id, {
+				download: async () => {
+					throw new Error('should not be called');
+				}
+			})
+		).length,
+		0
+	);
+	check(
+		'a missing object throws rather than sending a forward with the file silently gone',
+		await (async () => {
+			try {
+				await loadForwardedAttachments(db, first.email.id, {
+					download: async () => {
+						throw new Error('gone');
+					}
+				});
+				return false;
+			} catch {
+				return true;
+			}
+		})()
+	);
+
+	const forwarded = await storeSentEmail(
+		db,
+		{
+			messageId: newOutboundMessageId(sender),
+			inReplyTo: null,
+			// A forward starts a new thread — the recipient is new.
+			threadId: null,
+			fromEmail: sender,
+			toEmails: [`carol@${recipientDomain}`],
+			ccEmails: [],
+			subject: `Fwd: ${stamp} hello there`,
+			bodyText: 'passing this along'
+		},
+		new Date(sentAt.getTime() + 180_000)
+	);
+	threadIds.push(forwarded.email.threadId);
+	emailIds.push(forwarded.email.id);
+	check('a forward does not join the original thread', forwarded.threadCreated);
+	check(
+		'…so it is a different thread from the message it forwards',
+		forwarded.email.threadId !== first.email.threadId
+	);
+
+	const copied = await storeForwardedAttachments(db, forwarded.email.id, loaded, {
+		upload: async (key, body) => bucket.set(key, body)
+	});
+	attachmentIds.push(...copied.stored.map((row) => row.id));
+	equal('the copy is recorded against the new message', copied.stored.length, 1);
+	equal('nothing failed', copied.failed, []);
+	check(
+		'the copy has its own object key — the two rows never share one blob',
+		copied.stored[0].r2ObjectKey !== sourceKey
+	);
+	equal(
+		'the key is namespaced by the new email and the source attachment',
+		copied.stored[0].r2ObjectKey,
+		forwardedObjectKey(forwarded.email.id, loaded[0])
+	);
+	check('the bytes were written under that key', bucket.has(copied.stored[0].r2ObjectKey));
+	equal(
+		'the original attachment row is untouched',
+		(await getAttachmentsByEmailId(db, first.email.id)).length,
+		1
+	);
+	equal(
+		'the forwarded message shows the file to the owner too',
+		(await getAttachmentsByEmailId(db, forwarded.email.id)).map((row) => row.filename),
+		['Quarterly Report.pdf']
+	);
+
+	// The post-send half is best-effort: the mail is already out, so a failed copy
+	// is reported, not thrown, and the orphaned object is swept.
+	const removed: string[] = [];
+	const failedCopy = await storeForwardedAttachments(
+		db,
+		// An email id no row exists for, so the insert violates the FK.
+		`${stamp}-nonexistent`,
+		loaded,
+		{
+			upload: async (key, body) => bucket.set(key, body),
+			remove: async (key) => {
+				removed.push(key);
+				bucket.delete(key);
+			}
+		}
+	);
+	equal('a failed copy is reported, not thrown', failedCopy.failed, [loaded[0].sourceId]);
+	equal('and nothing is claimed as stored', failedCopy.stored.length, 0);
+	equal('the orphaned object is swept out of the bucket', removed.length, 1);
+
 	// And the whole point of storing the row: it shows up in the inbox.
 	const listed = (await listInboxThreads(db)).find((row) => row.threadId === first.email.threadId);
 	check('the thread appears in the inbox list', listed !== undefined);
 	equal('its preview is the newest message', listed?.bodyText, 'sent while a sibling is unread');
 } finally {
+	if (attachmentIds.length > 0) {
+		await db.delete(attachments).where(inArray(attachments.id, attachmentIds));
+	}
 	if (emailIds.length > 0) {
 		await db.delete(emails).where(inArray(emails.id, emailIds));
 	}

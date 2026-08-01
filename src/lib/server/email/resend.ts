@@ -94,6 +94,12 @@ export type OutboundEmail = {
 	messageId: string;
 	/** The parent's `Message-ID`, for a reply (US-H03). Null for a new message. */
 	inReplyTo?: string | null;
+	/**
+	 * Files to attach, as bytes (US-H04). Only a forward supplies any today, and
+	 * they are the *original* message's files read back out of R2 — see
+	 * `outbound/attachments.ts`.
+	 */
+	attachments?: { filename: string; contentType: string; content: Buffer }[];
 };
 
 /**
@@ -169,6 +175,16 @@ export async function sendOutboundEmail(email: OutboundEmail): Promise<string> {
 		// The stored `body_text` keeps the original, so the thread view still says
 		// "no body" rather than showing a phantom space.
 		text: email.text === '' ? ' ' : email.text,
+		// `content`, not `path`: handing Resend a presigned R2 URL to fetch would
+		// make delivery depend on a link expiring on its own clock and on Resend
+		// reaching a private bucket, and a failure to fetch would surface as a
+		// missing file rather than a failed send. Bytes are already in hand
+		// (`loadForwardedAttachments` refuses the send if they aren't), and the
+		// total is capped so this stays inside a serverless function's memory.
+		// Omitted rather than sent empty, matching `cc`.
+		...(email.attachments && email.attachments.length > 0
+			? { attachments: email.attachments }
+			: {}),
 		headers
 	});
 

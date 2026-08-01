@@ -70,13 +70,26 @@ export function attachmentObjectKey(
 	resendEmailId: string,
 	attachment: InboundAttachmentMetadata
 ): string {
-	const slug = attachmentFilename(attachment)
+	const slug = attachmentKeySlug(attachmentFilename(attachment));
+	const suffix = slug === '' ? '' : `-${slug}`;
+	return `inbound/${resendEmailId}/${attachment.id}${suffix}`;
+}
+
+/**
+ * The recognizable-in-the-bucket half of an object key: a filename reduced to
+ * lowercase key-safe characters.
+ *
+ * Exported because the outbound side builds keys too (`outbound/attachments.ts`,
+ * US-H04) and two slug rules would produce two families of key for the same
+ * file. It is decoration only — every key's *uniqueness* comes from the ids
+ * around this slug, never from the sender-supplied name.
+ */
+export function attachmentKeySlug(filename: string): string {
+	return filename
 		.toLowerCase()
 		.replace(/[^a-z0-9._-]+/g, '-')
 		.replace(/^-+|-+$/g, '')
 		.slice(0, 80);
-	const suffix = slug === '' ? '' : `-${slug}`;
-	return `inbound/${resendEmailId}/${attachment.id}${suffix}`;
 }
 
 /**

@@ -1,4 +1,5 @@
-// What a reply pre-fills (US-H03, tasks/prd-feature-compose.md).
+// What a reply (US-H03) and a forward (US-H04) pre-fill
+// (tasks/prd-feature-compose.md).
 //
 // Pure — no env, no db, no DOM — for the same reason `addresses.ts` is: the
 // compose `load` builds the draft with these functions on the server, and
@@ -78,14 +79,25 @@ export type QuotedOriginal = {
  */
 export function quoteOriginal(original: QuotedOriginal): string {
 	const attribution = `On ${original.timestamp}, ${original.sender} wrote:`;
-	const quoted = original.body
+	return original.body === '' ? attribution : `${attribution}\n${quoteBlock(original.body)}`;
+}
+
+/**
+ * `> `-prefixes every line of `text`, the one place that convention is applied.
+ *
+ * Shared by `quoteOriginal` (reply) and `forwardBody` (forward) so the two can
+ * never disagree about how a quoted block looks. An empty line becomes a bare
+ * `>`, not `> `, so the block carries no trailing whitespace; a `\r` left over
+ * from a CRLF body is dropped rather than quoted into the middle of a line.
+ */
+function quoteBlock(text: string): string {
+	return text
 		.split('\n')
 		.map((line) => {
 			const withoutCr = line.endsWith('\r') ? line.slice(0, -1) : line;
 			return withoutCr === '' ? '>' : `> ${withoutCr}`;
 		})
 		.join('\n');
-	return original.body === '' ? attribution : `${attribution}\n${quoted}`;
 }
 
 /**
@@ -131,4 +143,58 @@ export function replyRecipients(
 		recipients.push(normalized);
 	}
 	return recipients;
+}
+
+/**
+ * `Fwd: <subject>`, or the subject unchanged when it already carries a `Fwd:`
+ * (or the `Fw:` short form) — US-H04's "not double-prefixed if already present".
+ *
+ * The mirror of `replySubject`, sharing its `SUBJECT_PREFIX` and its
+ * outermost-prefix-only rule: `Fwd: Re: lunch` is a forward of a reply and stays
+ * as it is, while `Re: lunch` becomes `Fwd: Re: lunch` — that `Re:` is part of
+ * what the subject now says. An empty subject stays empty rather than becoming a
+ * bare `Fwd:`, and the send's `(no subject)` placeholder covers it.
+ */
+export function forwardSubject(subject: string): string {
+	const trimmed = subject.trim();
+	if (trimmed === '') return '';
+	if (hasPrefix(trimmed, 'Fwd')) return trimmed;
+	return `Fwd: ${trimmed}`;
+}
+
+export type ForwardedOriginal = QuotedOriginal & {
+	/** The original's subject, verbatim — the forwarded header block shows it. */
+	subject: string;
+	/** The original's To line, already formatted for display. */
+	to: string;
+};
+
+/**
+ * The body a forward opens with: two blank lines to write in, then the original.
+ *
+ * A forward is shown to somebody who has never seen the message, so unlike a
+ * reply it needs the original's *envelope* — who sent it, when, under what
+ * subject, to whom — and not just an attribution line. That block is the
+ * `---------- Forwarded message ----------` header every mail client writes, and
+ * it goes through the same `> ` quoting as the body beneath it: one visual
+ * boundary between "what I am saying" and "what I am passing on", rather than
+ * two different treatments of the same forwarded unit.
+ *
+ * A field the original didn't have (an empty To, an empty subject) is omitted
+ * rather than printed empty — a header line with nothing after the colon reads
+ * as a bug in the forwarding client.
+ */
+export function forwardBody(original: ForwardedOriginal): string {
+	const headers = [
+		`From: ${original.sender}`,
+		`Date: ${original.timestamp}`,
+		original.subject === '' ? null : `Subject: ${original.subject}`,
+		original.to === '' ? null : `To: ${original.to}`
+	].filter((line): line is string => line !== null);
+	// The body is separated from the headers by a blank (quoted) line, exactly as
+	// it is in the message being forwarded.
+	const quoted = quoteBlock(
+		original.body === '' ? headers.join('\n') : `${headers.join('\n')}\n\n${original.body}`
+	);
+	return `\n\n---------- Forwarded message ----------\n${quoted}\n`;
 }

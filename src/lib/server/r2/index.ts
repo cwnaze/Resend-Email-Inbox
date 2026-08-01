@@ -61,6 +61,27 @@ export async function uploadToR2(
 }
 
 /**
+ * Reads an object back out of the bucket as bytes (US-H04).
+ *
+ * The browser never uses this — a download link is presigned so the bytes go
+ * straight from R2 to the client (`getR2SignedDownloadUrl`). It exists for the
+ * one case where the *server* needs the content: forwarding an attachment, whose
+ * bytes have to be handed to Resend and written back under a new key.
+ */
+export async function downloadFromR2(key: string): Promise<Buffer> {
+	const response = await client.send(
+		new GetObjectCommand({
+			Bucket: bucketName,
+			Key: key
+		})
+	);
+	if (!response.Body) {
+		throw new Error(`R2 object ${key} has no body`);
+	}
+	return Buffer.from(await response.Body.transformToByteArray());
+}
+
+/**
  * Deletes an object from the configured R2 bucket by key.
  */
 export async function deleteFromR2(key: string): Promise<void> {

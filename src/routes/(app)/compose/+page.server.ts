@@ -13,12 +13,32 @@ import {
 	type ComposeDraft,
 	type ComposeValidation
 } from '$lib/compose/addresses';
-import { replyBody, replyRecipients, replySubject } from '$lib/compose/reply';
-import { absoluteTime, bodyPlainText, senderLabel } from '$lib/inbox/format';
+import {
+	forwardBody,
+	forwardSubject,
+	replyBody,
+	replyRecipients,
+	replySubject
+} from '$lib/compose/reply';
+import {
+	absoluteTime,
+	addressListLabel,
+	bodyPlainText,
+	formatFileSize,
+	senderLabel
+} from '$lib/inbox/format';
 import { validateSession } from '$lib/server/auth/session';
+import { getAttachmentsByEmailId } from '$lib/server/db/attachments';
 import { getOutboundSender, sendOutboundEmail } from '$lib/server/email/resend';
 import { newOutboundMessageId } from '$lib/server/outbound/message-id';
+import {
+	ForwardedAttachmentsTooLargeError,
+	loadForwardedAttachments,
+	storeForwardedAttachments,
+	MAX_FORWARDED_ATTACHMENT_BYTES
+} from '$lib/server/outbound/attachments';
 import { storeSentEmail } from '$lib/server/outbound/store';
+import { deleteFromR2, downloadFromR2, uploadToR2 } from '$lib/server/r2';
 
 /**
  * One shape for every outcome, success and failure alike.
@@ -48,8 +68,28 @@ type ComposeResult = {
 };
 
 /**
- * The message a reply is answering, looked up from `?replyTo=<email id>`
- * (US-H03).
+ * How this compose screen was opened: from scratch, from Reply (US-H03), or from
+ * Forward (US-H04).
+ *
+ * Two query parameters rather than a `mode=` plus a shared id, because the two
+ * links are written independently in `ThreadMessage.svelte` and a shared id with
+ * a separate mode flag can arrive half-specified. If both are somehow present,
+ * `replyTo` wins — one deterministic answer beats an error page for a URL only a
+ * hand-edit can produce.
+ */
+type ComposeMode = 'reply' | 'forward';
+
+function composeSource(url: URL): { mode: ComposeMode; emailId: string } | null {
+	const replyTo = url.searchParams.get('replyTo');
+	if (replyTo) return { mode: 'reply', emailId: replyTo };
+	const forwardOf = url.searchParams.get('forwardOf');
+	if (forwardOf) return { mode: 'forward', emailId: forwardOf };
+	return null;
+}
+
+/**
+ * The message a reply is answering or a forward is passing on, looked up from
+ * `?replyTo=<email id>` (US-H03) / `?forwardOf=<email id>` (US-H04).
  *
  * **The id is the only thing the browser gets to choose**, and the *only* thing
  * it can choose. Every value that follows from it — the recipient, the subject,
@@ -65,7 +105,7 @@ type ComposeResult = {
  * compose screen (the owner can still write to whoever they meant), not an error
  * page.
  */
-async function loadReplyTarget(emailId: string | null): Promise<Email | null> {
+async function loadParent(emailId: string | null): Promise<Email | null> {
 	if (!emailId) return null;
 	return (await getVisibleEmailById(db, emailId)) ?? null;
 }
@@ -90,17 +130,63 @@ function replyDraft(parent: Email): ComposeDraft {
 	};
 }
 
+/**
+ * The pre-filled draft for a forward of `parent` (US-H04).
+ *
+ * **To is empty, and that is the story.** A forward's whole premise is that the
+ * recipient is someone new; pre-filling anybody — the original sender, the
+ * original recipients — is one un-noticed Send away from mailing a private
+ * message back to the person it came from.
+ */
+function forwardDraft(parent: Email): ComposeDraft {
+	return {
+		to: '',
+		cc: '',
+		subject: forwardSubject(parent.subject),
+		body: forwardBody({
+			sender: senderLabel(parent.fromName, parent.fromEmail),
+			timestamp: absoluteTime(parent.receivedAt),
+			subject: parent.subject.trim(),
+			to: addressListLabel(parent.toEmails),
+			// The same plain-text rendering the thread view shows, for the reason the
+			// reply draft uses it: a plain-text send has nowhere to put markup.
+			body: bodyPlainText(parent.bodyText, parent.bodyHtml)
+		})
+	};
+}
+
 export const load: PageServerLoad = async ({ url }) => {
-	const parent = await loadReplyTarget(url.searchParams.get('replyTo'));
+	const source = composeSource(url);
+	const parent = await loadParent(source?.emailId ?? null);
+	// The files this forward will carry, for display only. The *send* re-reads
+	// them from the parent row (`loadForwardedAttachments`) — nothing here is
+	// trusted on the way back in.
+	const attachments =
+		parent && source?.mode === 'forward' ? await getAttachmentsByEmailId(db, parent.id) : [];
+
 	return {
 		contacts: await listContactsForSuggestions(db),
 		// Null on the ordinary compose screen. When present the page seeds its
 		// fields from it and carries the id back on submit.
-		// `threadId` is here for the page's back-link only; the *send* re-reads it
-		// from the row rather than trusting a round trip.
-		reply: parent
-			? { emailId: parent.id, threadId: parent.threadId, draft: replyDraft(parent) }
-			: null
+		// `threadId` is here for the page's back-link only; the *send* re-reads what
+		// it needs from the row rather than trusting a round trip.
+		context:
+			parent && source
+				? {
+						mode: source.mode,
+						emailId: parent.id,
+						threadId: parent.threadId,
+						draft: source.mode === 'reply' ? replyDraft(parent) : forwardDraft(parent),
+						// `id` is the list's key: two attachments on one message can share
+						// a filename (see `inbound/attachments.ts`), so keying the rendered
+						// list by name or size would collide.
+						attachments: attachments.map((attachment) => ({
+							id: attachment.id,
+							filename: attachment.filename,
+							size: formatFileSize(attachment.sizeBytes)
+						}))
+					}
+				: null
 	};
 };
 
@@ -172,11 +258,37 @@ export const actions = {
 		// A reply whose parent has since been deleted degrades to a new thread
 		// rather than failing the send: the message the owner wrote is still worth
 		// delivering, and inbound's subject fallback usually re-joins it anyway.
-		const parent = await loadReplyTarget(url.searchParams.get('replyTo'));
+		const source = composeSource(url);
+		const parent = await loadParent(source?.emailId ?? null);
+		const forwarding = parent !== null && source?.mode === 'forward';
 
 		const validation = validateComposeDraft(draft);
 		if (!validation.valid) {
 			return fail(400, { draft, errors: validation.errors } satisfies ComposeResult);
+		}
+
+		// The forwarded files are read *before* the send and a failure refuses it,
+		// which is the opposite of how attachments are treated everywhere else in
+		// this app. Mail cannot be un-sent: a forward whose attachment quietly went
+		// missing is a message that says "see attached" and doesn't, and the owner
+		// has no way to know. Failing now costs a retry with the draft still on
+		// screen (FR-4).
+		let forwardedAttachments: Awaited<ReturnType<typeof loadForwardedAttachments>> = [];
+		if (forwarding) {
+			try {
+				forwardedAttachments = await loadForwardedAttachments(db, parent.id, {
+					download: downloadFromR2
+				});
+			} catch (error) {
+				console.error('forward could not read its attachments:', parent.id, error);
+				const tooLarge = error instanceof ForwardedAttachmentsTooLargeError;
+				return fail(tooLarge ? 400 : 502, {
+					draft,
+					error: tooLarge
+						? `These attachments are too large to forward (limit ${formatFileSize(MAX_FORWARDED_ATTACHMENT_BYTES)}).`
+						: 'Could not read this message’s attachments. Nothing was sent — try again.'
+				} satisfies ComposeResult);
+			}
 		}
 
 		// The recipients `validateComposeDraft` already parsed, not a second parse of
@@ -192,7 +304,12 @@ export const actions = {
 		// an inbound parent is the id its sender's client minted and for an outbound
 		// one is the id `outbound/message-id.ts` minted. Either way it is the value a
 		// receiving client will echo back, so it is the right thing to cite.
-		const inReplyTo = parent?.messageId ?? null;
+		//
+		// A **forward cites nothing**. It is a new conversation with a new person
+		// (US-H04's second criterion makes that explicit for the thread), and
+		// `In-Reply-To` pointing at a message the recipient has never seen would ask
+		// their client to file this mail under a thread it doesn't have.
+		const inReplyTo = forwarding ? null : (parent?.messageId ?? null);
 
 		try {
 			await sendOutboundEmail({
@@ -201,7 +318,12 @@ export const actions = {
 				subject,
 				text: draft.body,
 				messageId,
-				inReplyTo
+				inReplyTo,
+				attachments: forwardedAttachments.map((attachment) => ({
+					filename: attachment.filename,
+					contentType: attachment.contentType,
+					content: attachment.bytes
+				}))
 			});
 		} catch (error) {
 			// The send is the only step whose failure means "nothing happened", so it
@@ -226,15 +348,36 @@ export const actions = {
 				// wire (US-H03, FR-2). This is the reliable half of threading: the
 				// header path is best-effort in this direction because SES rewrites
 				// `Message-ID` — see `docs/notes/compose.md`. Null here starts a new
-				// thread, which is what composing from scratch means.
-				threadId: parent?.threadId ?? null,
+				// thread, which is what composing from scratch means — and what a
+				// *forward* means too (US-H04): the recipient is new, so the
+				// conversation is new. Burying it in the original thread would file a
+				// message to a third party under a conversation they were never part
+				// of, and the thread view would show it as a reply that never came.
+				threadId: forwarding ? null : (parent?.threadId ?? null),
 				fromEmail: from,
 				toEmails: validation.to,
 				ccEmails: validation.cc,
 				subject,
 				bodyText: draft.body
 			});
-			return { draft, sent: true, threadId: email.threadId } satisfies ComposeResult;
+
+			// Deliberately outside `storeSentEmail`'s transaction and after it: this
+			// is R2 work, and an upload cannot be rolled back by a database rollback.
+			// Best-effort, per `storeForwardedAttachments` — the mail is already out,
+			// so a failed copy costs the owner's own record of a file the recipient
+			// already has, and it must not turn a delivered message into an error.
+			let warning: string | undefined;
+			if (forwardedAttachments.length > 0) {
+				const { failed } = await storeForwardedAttachments(db, email.id, forwardedAttachments, {
+					upload: (key, body, contentType) => uploadToR2(key, body, contentType),
+					remove: deleteFromR2
+				});
+				if (failed.length > 0) {
+					warning = 'Delivered with its attachments, but your copy of them could not be saved.';
+				}
+			}
+
+			return { draft, sent: true, threadId: email.threadId, warning } satisfies ComposeResult;
 		} catch (error) {
 			console.error('compose send stored no row:', messageId, error);
 			return {
