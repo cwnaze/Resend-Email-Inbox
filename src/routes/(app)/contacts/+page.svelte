@@ -29,15 +29,18 @@
 			{#each data.contacts as contact (contact.id)}
 				<li>
 					<!--
-						`editing` and the error both come from the server: the open row is
-						`?edit=<id>` and the message is the `fail()` payload, keyed by id so a
-						failed save can only ever annotate the row it was for.
+						`editing` and the failure both come from the server: the open row is
+						`?edit=<id>`, and the `fail()` payload is keyed by id so a rejected save
+						can only ever annotate — and re-seed — the row it was for. It carries
+						the rejected text as well as the message, so the owner gets their input
+						back to correct rather than an empty field.
 					-->
 					<ContactRow
 						{contact}
 						editing={data.editingId === contact.id}
 						maxNameLength={data.maxNameLength}
 						errorMessage={form?.id === contact.id ? form.message : null}
+						submittedName={form?.id === contact.id ? form.name : null}
 					/>
 				</li>
 			{/each}

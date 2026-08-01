@@ -170,9 +170,9 @@ stored           -> {"name":"Luca Bianchi","auto_created":0}
 
 ## The two things that have to fail
 
-A validation failure has to leave the form **open**, and an unauthenticated POST has to change nothing.
+A validation failure has to leave the form **open and still holding the rejected text**, and an unauthenticated POST has to change nothing.
 
-The first is why the form posts to `?/rename&edit=<id>` rather than `?/rename`: a form action's query *replaces* the page's, so without carrying `edit` the `fail()` re-render would come back with the form closed — silently discarding the input the owner is being asked to correct. Below, the input's `maxlength` is stripped first, on purpose: it is a browser courtesy, and the check that counts is the server's.
+The first is why the form posts to `?/rename&edit=<id>` rather than `?/rename`: a form action's query *replaces* the page's, so without carrying `edit` the `fail()` re-render would come back with the form closed. Keeping it open is only half of it — the `fail()` payload also echoes the submitted text back, because the field otherwise re-seeds from the *stored* name and "correct it and save again" would mean retyping from scratch. Below, the input's `maxlength` is stripped first, on purpose: it is a browser courtesy, and the check that counts is the server's.
 
 The second is the `(app)` route group's standing trap: a SvelteKit action runs **before** the layout load that protects the group, so `rename` calls `validateSession` itself. Without that, the POST below would rename the contact and *then* redirect the anonymous caller to `/login`.
 
@@ -197,16 +197,18 @@ rodney --local open http://localhost:5180/login >/dev/null
 rodney --local js "fetch(\"/api/auth/verify-code\",{method:\"POST\",headers:{\"content-type\":\"application/json\"},body:JSON.stringify({code:\"123456\"})}).then(r=>r.status)" >/dev/null
 rodney --local open http://localhost:5180/contacts >/dev/null && rodney --local waitstable >/dev/null
 
+FIELD="document.querySelector(\"main form input[name=name]\")"
 ROW="Array.from(document.querySelectorAll(\"main li\")).find(li=>li.innerText.includes(\"luca@f03-demo.example\"))"
 rodney --local js "(()=>{$ROW.querySelector(\"a\").click(); return 1})()" >/dev/null
 rodney --local waitstable >/dev/null
 
-echo "== 201 characters, with the browser cap removed =="
-rodney --local js "(()=>{const i=document.querySelector(\"main form input[name=name]\"); i.removeAttribute(\"maxlength\"); i.value=\"x\".repeat(201); document.querySelector(\"main form\").requestSubmit(); return 1})()" >/dev/null
+echo "== a 201-character name, with the browser cap removed =="
+rodney --local js "(()=>{$FIELD.removeAttribute(\"maxlength\"); $FIELD.value=\"x\".repeat(200)+\"!\"; document.querySelector(\"main form\").requestSubmit(); return 1})()" >/dev/null
 rodney --local waitstable >/dev/null
 echo "inline error     -> $(rodney --local js "document.querySelector(\"main [role=alert]\").innerText")"
 echo "alerts on page   -> $(rodney --local js "document.querySelectorAll(\"main [role=alert]\").length") (the failure annotates only its own row)"
-echo "form still open  -> $(rodney --local js "!!document.querySelector(\"main form input[name=name]\")")"
+echo "form still open  -> $(rodney --local js "!!$FIELD")"
+echo "input retained   -> $(rodney --local js "$FIELD.value.length") chars, still ending $(rodney --local js "$FIELD.value.slice(-1)")"
 echo "stored           -> $(node --env-file=.env node_modules/.bin/tsx flag-check.mts)"
 rodney --local screenshot -w 900 /tmp/claude-501/contacts-edit-error.png >/dev/null
 echo
@@ -217,10 +219,11 @@ echo "stored           -> $(node --env-file=.env node_modules/.bin/tsx flag-chec
 ```
 
 ```output
-== 201 characters, with the browser cap removed ==
+== a 201-character name, with the browser cap removed ==
 inline error     -> Name must be 200 characters or fewer.
 alerts on page   -> 1 (the failure annotates only its own row)
 form still open  -> true
+input retained   -> 201 chars, still ending !
 stored           -> {"name":null,"auto_created":1}
 
 == POST with no session cookie ==
@@ -229,10 +232,10 @@ stored           -> {"name":null,"auto_created":1}
 ```
 
 ```bash {image}
-![The rename form still open after a rejected save, the input retained and a red "Name must be 200 characters or fewer." beneath it](/tmp/claude-501/contacts-edit-error.png)
+![The rename form still open after a rejected save: the 201-character input is still in the field, with a red "Name must be 200 characters or fewer." beneath it](/tmp/claude-501/contacts-edit-error.png)
 ```
 
-![The rename form still open after a rejected save, the input retained and a red "Name must be 200 characters or fewer." beneath it](d8a03a56-2026-08-01.png)
+![The rename form still open after a rejected save: the 201-character input is still in the field, with a red "Name must be 200 characters or fewer." beneath it](a12f8d45-2026-08-01.png)
 
 ## Quality gates
 

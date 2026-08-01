@@ -72,8 +72,12 @@ after a `fail()`. Consequences worth keeping:
 - The load returns the raw `name` alongside `displayName`, because the input has to be
   seeded with the _stored_ value. Seeding it with `displayName` would turn "this contact
   has no name" into "this contact is named after its own address" on the first save.
-- The `fail()` payload carries the contact `id`, and `+page.svelte` only shows the message
-  on the matching row, so an error can't annotate a row it wasn't about.
+- The `fail()` payload carries the contact `id` **and the rejected text**, and
+  `+page.svelte` applies both only to the matching row. The id is what stops one row's
+  error annotating another; the text is what makes keeping the form open worth anything
+  — the field otherwise re-seeds from the _stored_ name, so "correct it and save again"
+  would mean retyping from scratch. `ContactRow`'s `fieldValue` prefers it with `??`, not
+  `||`, because a submitted empty string is a real answer.
 - The action **calls `validateSession` itself** — an action runs before the group layout's
   load (`docs/notes/auth.md`) — and ends in a `redirect(303, …)` to the bare `/contacts`,
   which both closes the form and keeps `?/rename` out of the address bar (this form is

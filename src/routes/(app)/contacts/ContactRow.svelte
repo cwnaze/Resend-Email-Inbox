@@ -20,7 +20,8 @@
 		contact,
 		editing,
 		maxNameLength,
-		errorMessage
+		errorMessage,
+		submittedName
 	}: {
 		contact: {
 			id: string;
@@ -35,7 +36,14 @@
 		maxNameLength: number;
 		/** Server-side validation message for this row, if the last save failed. */
 		errorMessage: string | null;
+		/** The rejected text from that failed save, so it can be corrected rather than retyped. */
+		submittedName: string | null;
 	} = $props();
+
+	// A rejected save wins over the stored name — that is the value the owner is
+	// being asked to fix. `??`, not `||`: a submitted empty string is a real
+	// answer and must not fall back to the stored name.
+	const fieldValue = $derived(submittedName ?? contact.name ?? '');
 
 	// A contact whose name is unknown falls back to its address as the heading
 	// (both here and in the sort), in which case repeating it underneath is
@@ -80,7 +88,7 @@
 				autofocus
 				autocomplete="off"
 				maxlength={maxNameLength}
-				value={contact.name ?? ''}
+				value={fieldValue}
 				placeholder="Leave blank to show the address"
 				class="mt-1 w-full rounded-sm border border-border bg-surface px-2 py-1 text-sm text-text-primary outline-none focus-visible:border-accent"
 			/>

@@ -75,8 +75,14 @@ export const actions = {
 		// `maxlength` on the input is a courtesy to the browser, not the rule.
 		const trimmed = name.trim();
 		if (trimmed.length > MAX_CONTACT_NAME_LENGTH) {
+			// The rejected text comes back with the failure, and the form re-seeds
+			// from it. Without that, keeping the form open (the whole reason `edit`
+			// rides in the action URL) buys nothing: the field would re-render from
+			// the *stored* name, so "correct it and save again" would mean retyping
+			// from scratch. `name`, not `trimmed` — echo back what was typed.
 			return fail(400, {
 				id,
+				name,
 				message: `Name must be ${MAX_CONTACT_NAME_LENGTH} characters or fewer.`
 			});
 		}
