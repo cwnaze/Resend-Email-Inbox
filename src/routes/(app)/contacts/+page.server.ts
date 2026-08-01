@@ -139,7 +139,7 @@ export const actions = {
 		// this form has two, and re-rendering it with the good one blanked would
 		// make fixing a typo in the other mean retyping it.
 		const invalid = (message: string, conflictId: string | null = null) =>
-			fail(400, { intent: 'add' as const, id: null, name, email, message, conflictId });
+			fail(400, { intent: 'add' as const, name, email, message, conflictId });
 
 		const trimmedName = name.trim();
 		const trimmedEmail = email.trim();
