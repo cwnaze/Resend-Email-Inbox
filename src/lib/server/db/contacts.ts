@@ -179,6 +179,57 @@ export async function updateContactName(
 	return updated;
 }
 
+/**
+ * Longest address a manually added contact may store (US-I03).
+ *
+ * 254 is the RFC 5321 ceiling on a deliverable address, so this rejects only
+ * what no mail server would accept anyway. Same reason `MAX_CONTACT_NAME_LENGTH`
+ * is exported: the form's `maxlength` and the action's check are one number.
+ */
+export const MAX_CONTACT_EMAIL_LENGTH = 254;
+
+export type CreateContactResult =
+	| { created: true; contact: Contact }
+	/** The address already exists; `contact` is the row that owns it. */
+	| { created: false; contact: Contact };
+
+/**
+ * Adds a contact by hand (US-I03).
+ *
+ * `auto_created = false` from birth, for the same reason `updateContactName`
+ * clears it: the owner typed this name, so the next delivery from the address
+ * must not overwrite it with whatever display name the sender's client puts on
+ * the wire. A manual add and a manual rename produce the same kind of row.
+ *
+ * **Duplicates are a return value, not an exception.** The unique index on
+ * `contacts.email` is case-sensitive and `normalizeEmail` is what makes it bite,
+ * so the caller can't pre-check with a plain `select` and be sure — and the
+ * route has to *name* the existing contact in its error anyway (FR: "points to
+ * the existing contact"). Hence `onConflictDoNothing` + re-read: the conflicting
+ * row comes back as data, and a genuine race loses harmlessly instead of 500ing.
+ * A pre-read alone would still race; the insert is the only real arbiter.
+ */
+export async function createContact(
+	db: Database,
+	input: { email: string; name?: string | null },
+	now: Date = new Date()
+): Promise<CreateContactResult> {
+	const email = normalizeEmail(input.email);
+	const name = input.name?.trim() || null;
+
+	const [inserted] = await db
+		.insert(contacts)
+		.values({ email, name, autoCreated: false, createdAt: now, updatedAt: now })
+		.onConflictDoNothing()
+		.returning();
+
+	if (inserted) return { created: true, contact: inserted };
+
+	const existing = await getContactByEmail(db, email);
+	if (existing) return { created: false, contact: existing };
+	throw new Error(`contact insert failed for ${email}`);
+}
+
 export type UpsertContactResult = {
 	contact: Contact;
 	/** True when this call inserted the row (vs. finding an existing one). */

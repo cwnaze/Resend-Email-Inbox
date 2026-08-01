@@ -8,14 +8,36 @@
 	 * this page rather than a new one.
 	 */
 	import EmptyState from '$lib/components/EmptyState.svelte';
+	import AddContactForm from './AddContactForm.svelte';
 	import ContactRow from './ContactRow.svelte';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
+
+	// `form` is the union of every action's failure payload, so which form the
+	// message belongs to has to be decided before any other field is read —
+	// hence the `intent` discriminant rather than sniffing for a key.
+	const addFailure = $derived(form?.intent === 'add' ? form : null);
+	const renameFailure = $derived(form?.intent === 'rename' ? form : null);
 </script>
 
 <section class="mx-auto flex min-h-full w-full max-w-3xl flex-col">
 	<h1 class="border-b border-border px-4 py-3 text-sm font-semibold text-text-primary">Contacts</h1>
+
+	<!--
+		Above the list and outside the empty-state branch on purpose: adding the
+		very first contact is exactly the case the empty state describes, so the
+		affordance has to be there when there is nothing else on the page.
+	-->
+	<AddContactForm
+		open={data.adding}
+		maxNameLength={data.maxNameLength}
+		maxEmailLength={data.maxEmailLength}
+		errorMessage={addFailure?.message ?? null}
+		conflictId={addFailure?.conflictId ?? null}
+		submittedName={addFailure?.name ?? null}
+		submittedEmail={addFailure?.email ?? null}
+	/>
 
 	{#if data.contacts.length === 0}
 		<div class="flex flex-1 items-center justify-center p-8">
@@ -39,8 +61,8 @@
 						{contact}
 						editing={data.editingId === contact.id}
 						maxNameLength={data.maxNameLength}
-						errorMessage={form?.id === contact.id ? form.message : null}
-						submittedName={form?.id === contact.id ? form.name : null}
+						errorMessage={renameFailure?.id === contact.id ? renameFailure.message : null}
+						submittedName={renameFailure?.id === contact.id ? renameFailure.name : null}
 					/>
 				</li>
 			{/each}
