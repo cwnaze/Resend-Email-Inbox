@@ -124,6 +124,27 @@ export function replyBody(original: QuotedOriginal): string {
  * sending address is dropped so replying never Cc's the sender back into their
  * own inbox.
  */
+export function replyRecipients(
+	original: {
+		direction: 'inbound' | 'outbound';
+		fromEmail: string;
+		toEmails: string[];
+	},
+	ownAddress: string
+): string[] {
+	const candidates = original.direction === 'outbound' ? original.toEmails : [original.fromEmail];
+	const own = ownAddress.trim().toLowerCase();
+	const seen = new Set<string>();
+	const recipients: string[] = [];
+	for (const candidate of candidates) {
+		const normalized = candidate.trim().toLowerCase();
+		if (normalized === '' || normalized === own || seen.has(normalized)) continue;
+		seen.add(normalized);
+		recipients.push(normalized);
+	}
+	return recipients;
+}
+
 /**
  * `Fwd: <subject>`, or the subject unchanged when it already carries a `Fwd:`
  * (or the `Fw:` short form) — US-H04's "not double-prefixed if already present".
@@ -176,25 +197,4 @@ export function forwardBody(original: ForwardedOriginal): string {
 		original.body === '' ? headers.join('\n') : `${headers.join('\n')}\n\n${original.body}`
 	);
 	return `\n\n---------- Forwarded message ----------\n${quoted}\n`;
-}
-
-export function replyRecipients(
-	original: {
-		direction: 'inbound' | 'outbound';
-		fromEmail: string;
-		toEmails: string[];
-	},
-	ownAddress: string
-): string[] {
-	const candidates = original.direction === 'outbound' ? original.toEmails : [original.fromEmail];
-	const own = ownAddress.trim().toLowerCase();
-	const seen = new Set<string>();
-	const recipients: string[] = [];
-	for (const candidate of candidates) {
-		const normalized = candidate.trim().toLowerCase();
-		if (normalized === '' || normalized === own || seen.has(normalized)) continue;
-		seen.add(normalized);
-		recipients.push(normalized);
-	}
-	return recipients;
 }

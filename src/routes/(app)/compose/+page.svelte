@@ -232,7 +232,7 @@
 					Forwarded {data.context.attachments.length === 1 ? 'attachment' : 'attachments'}
 				</h2>
 				<ul class="flex flex-col gap-1">
-					{#each data.context.attachments as attachment (attachment.filename + attachment.size)}
+					{#each data.context.attachments as attachment (attachment.id)}
 						<li class="flex items-baseline gap-2 font-mono text-xs text-text-primary">
 							<span class="min-w-0 break-all">{attachment.filename}</span>
 							<span class="shrink-0 text-text-muted">{attachment.size}</span>

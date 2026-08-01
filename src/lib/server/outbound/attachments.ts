@@ -23,7 +23,10 @@ import { attachmentKeySlug } from '../inbound/attachments';
  * check runs against the stored `size_bytes` *before* anything is downloaded, so
  * an oversized forward costs one query rather than 40 MB of transfer.
  */
-export const MAX_FORWARDED_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+// Base 1000, not 1024, because `formatFileSize` renders in base 1000: a limit
+// stored as 25 MiB reads back to the owner as "26.2 MB", which is not a number
+// anybody set.
+export const MAX_FORWARDED_ATTACHMENT_BYTES = 25 * 1000 * 1000;
 
 /** One file, in memory, on its way from the original message to the forward. */
 export type ForwardedAttachment = {

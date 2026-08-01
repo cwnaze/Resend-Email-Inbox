@@ -177,7 +177,11 @@ export const load: PageServerLoad = async ({ url }) => {
 						emailId: parent.id,
 						threadId: parent.threadId,
 						draft: source.mode === 'reply' ? replyDraft(parent) : forwardDraft(parent),
+						// `id` is the list's key: two attachments on one message can share
+						// a filename (see `inbound/attachments.ts`), so keying the rendered
+						// list by name or size would collide.
 						attachments: attachments.map((attachment) => ({
+							id: attachment.id,
 							filename: attachment.filename,
 							size: formatFileSize(attachment.sizeBytes)
 						}))
