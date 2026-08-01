@@ -9,9 +9,9 @@
 	 */
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ContactRow from './ContactRow.svelte';
-	import type { PageData } from './$types';
+	import type { ActionData, PageData } from './$types';
 
-	let { data }: { data: PageData } = $props();
+	let { data, form }: { data: PageData; form: ActionData } = $props();
 </script>
 
 <section class="mx-auto flex min-h-full w-full max-w-3xl flex-col">
@@ -28,7 +28,20 @@
 		<ul class="flex flex-col">
 			{#each data.contacts as contact (contact.id)}
 				<li>
-					<ContactRow {contact} />
+					<!--
+						`editing` and the failure both come from the server: the open row is
+						`?edit=<id>`, and the `fail()` payload is keyed by id so a rejected save
+						can only ever annotate — and re-seed — the row it was for. It carries
+						the rejected text as well as the message, so the owner gets their input
+						back to correct rather than an empty field.
+					-->
+					<ContactRow
+						{contact}
+						editing={data.editingId === contact.id}
+						maxNameLength={data.maxNameLength}
+						errorMessage={form?.id === contact.id ? form.message : null}
+						submittedName={form?.id === contact.id ? form.name : null}
+					/>
 				</li>
 			{/each}
 		</ul>

@@ -496,8 +496,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 33,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "updateContactName is one statement setting name AND auto_created=false \u2014 the flag is the edit's durability (it is what stops upsertAutoContact re-applying the sender's own display name on the next delivery), so the two writes are never separable. Blank stores null, not '', matching what the list's sort/displayName already read as 'fall back to the address'. The open row is URL state (?edit=<id>), so the form works with JS off and survives a fail(); the form therefore posts to ?/rename&edit=<id>, since a form action's query replaces the page's. The rename action calls validateSession itself (an action runs before the group layout's load). Verified by src/lib/server/db/verify-contacts-list.mts (18 live-DB checks, including rename -> auto-upsert -> name survives) and in the browser via rodney; see docs/notes/contacts.md."
     },
     {
       "id": "US-I03",

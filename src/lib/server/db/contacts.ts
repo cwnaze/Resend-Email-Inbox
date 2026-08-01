@@ -135,6 +135,50 @@ export async function listContacts(db: Database): Promise<ContactListRow[]> {
 	}));
 }
 
+/**
+ * Longest display name a manual edit may store (US-I02).
+ *
+ * `contacts.name` is an unbounded SQLite `text` column, and the contacts list
+ * and compose autocomplete both render the name in a single truncated line —
+ * so the cap is about keeping a pasted essay out of the table, not about the
+ * storage. Exported because the edit form's `maxlength` and the action's own
+ * check have to be the same number.
+ */
+export const MAX_CONTACT_NAME_LENGTH = 200;
+
+/**
+ * Renames a contact by hand and takes it out of auto-derivation (US-I02, FR-2).
+ *
+ * The two writes are one statement on purpose: `auto_created = false` is not a
+ * separate feature of this action, it *is* the edit's durability. The flag is
+ * the only thing standing between the owner's chosen name and the next inbound
+ * delivery from that address, which `upsertAutoContact` would otherwise use to
+ * overwrite it. Setting the name without clearing the flag would look like it
+ * worked and silently revert on the next email.
+ *
+ * A blank name stores `null` rather than `''` — that is the value the list's
+ * sort and `displayName` already treat as "fall back to the address", and an
+ * empty string would sort ahead of every real name. Clearing still clears the
+ * flag: choosing to show the bare address is as much an owner decision as
+ * choosing a name, and it must survive the next delivery too.
+ *
+ * Returns the updated row, or `undefined` for an id that no longer exists —
+ * the caller decides what a missing contact means (this one 404s).
+ */
+export async function updateContactName(
+	db: Database,
+	id: string,
+	name: string | null,
+	now: Date = new Date()
+): Promise<Contact | undefined> {
+	const [updated] = await db
+		.update(contacts)
+		.set({ name: name?.trim() || null, autoCreated: false, updatedAt: now })
+		.where(eq(contacts.id, id))
+		.returning();
+	return updated;
+}
+
 export type UpsertContactResult = {
 	contact: Contact;
 	/** True when this call inserted the row (vs. finding an existing one). */
