@@ -52,7 +52,7 @@ suggestContacts
 
 ## In the browser
 
-Self-contained, the same shape as US-I01–I03's: seed the shared demo fixture (`casey@f03-demo.example` "Casey Demo", `dana@f03-demo.example` "Dana Casey", `luca@f03-demo.example" with no name), start a dev server, log in through the real endpoint (the session cookie is `httpOnly`, so `document.cookie` cannot fake it), drive the real compose form, then tear it all down.
+Self-contained, the same shape as US-I01–I03's: seed the shared demo fixture (`casey@f03-demo.example` "Casey Demo", `dana@f03-demo.example` "Dana Casey", `luca@f03-demo.example` with no name), start a dev server, log in through the real endpoint (the session cookie is `httpOnly`, so `document.cookie` cannot fake it), drive the real compose form, then tear it all down.
 
 Two determinism notes, both learned the hard way on the dry run. The suggestion listings are **filtered to the fixture's own domain** and the picked option is addressed **by its text rather than its position**: the live database also holds real correspondents, and the first draft of this demo captured one of them because it happened to match `casey`. That would have failed `showboat verify` months later over a contact that arrived by mail, which is exactly the kind of false alarm `CLAUDE.md` warns about. The rank *order* survives the filter, so nothing being proved was weakened.
 
@@ -97,8 +97,8 @@ echo "typed 'cas'    -> $(rodney --local js "$TO_OPTS")"
 # the listings are filtered: a real contact sorting above the fixture must not
 # change which row this clicks. `mousedown` is what the component listens for —
 # a bare `click` after `blur` would close the popup first.
-CLICK='(()=>{const o=Array.from(document.querySelectorAll("#to-suggestions [role=option]")).find(o=>o.textContent.includes("casey@f03-demo.example"));o.dispatchEvent(new MouseEvent("mousedown",{bubbles:true}));o.click();return o.id})()'
-echo "picking        -> $(rodney --local js "$CLICK")"
+PICK='(a=>{const o=Array.from(document.querySelectorAll("#"+a[0]+"-suggestions [role=option]")).find(o=>o.textContent.includes(a[1]));o.dispatchEvent(new MouseEvent("mousedown",{bubbles:true}));o.click();return o.id})'
+echo "picking        -> $(rodney --local js "$PICK(['to','casey@f03-demo.example'])")"
 rodney --local waitstable >/dev/null
 echo "picked         -> to=[$(rodney --local js 'document.querySelector("#compose-form input[name=to]").value')] expanded=$(rodney --local attr '#compose-form input[name=to]' aria-expanded)"
 
@@ -106,7 +106,7 @@ echo "picked         -> to=[$(rodney --local js 'document.querySelector("#compos
 rodney --local click '#cc-toggle' >/dev/null && rodney --local waitstable >/dev/null
 rodney --local input '#compose-form input[name=cc]' 'luca' >/dev/null && rodney --local waitstable >/dev/null
 echo "cc 'luca'      -> $(rodney --local js "$CC_OPTS")"
-rodney --local click '#cc-suggestions-0' >/dev/null && rodney --local waitstable >/dev/null
+rodney --local js "$PICK(['cc','luca@f03-demo.example'])" >/dev/null && rodney --local waitstable >/dev/null
 echo "picked cc opt  -> cc=[$(rodney --local js 'document.querySelector("#compose-form input[name=cc]").value')]"
 
 # The suggestions target the entry under the caret, not the whole field value,
