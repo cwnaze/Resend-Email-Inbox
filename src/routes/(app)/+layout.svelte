@@ -33,6 +33,18 @@
 		</a>
 
 		<!--
+			Contacts, like Compose, is a whole-app destination rather than part of
+			any one route's state, so it lives in the shell (US-I01). Plain-toned
+			so Compose stays the only accented action in the bar.
+		-->
+		<a
+			href={resolve('/(app)/contacts')}
+			class="ml-auto shrink-0 rounded border border-transparent px-3 py-1.5 font-mono text-sm text-text-muted transition-colors duration-fast ease-standard hover:text-text-primary focus-visible:border-border focus-visible:outline-none"
+		>
+			Contacts
+		</a>
+
+		<!--
 			Compose lives in the shell (unlike the search box and the thread list,
 			which left it): writing a new message is not part of the inbox list's
 			state, so every `(app)` route — a thread, a future `/contacts` — should
@@ -40,7 +52,7 @@
 		-->
 		<a
 			href={resolve('/(app)/compose')}
-			class="ml-auto shrink-0 rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:border-text-primary focus-visible:outline-none"
+			class="shrink-0 rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:border-text-primary focus-visible:outline-none"
 		>
 			Compose
 		</a>

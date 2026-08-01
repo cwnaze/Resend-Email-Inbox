@@ -650,3 +650,34 @@ Reviewed the diff and re-exercised the feature. One real bug, found by asking wh
   - `showboat exec` blocks with nested quotes are far easier to write into a file first and
     pass as `"$(cat block.sh)"` than to inline; `\x27` does not expand inside single quotes.
 ---
+
+## 2026-07-31 - US-I01 (Contacts list view)
+- Implemented `/contacts`: every `contacts` row sorted alphabetically by display name
+  (falling back to the address), each showing name, email, a message count and a
+  last-contacted timestamp derived from `emails`.
+- Files changed:
+  - `src/lib/server/db/contacts.ts` (+`listContacts`, +`CORRESPONDS_WITH_CONTACT`)
+  - NEW `src/routes/(app)/contacts/{+page.server.ts,+page.svelte,ContactRow.svelte}`
+  - NEW `src/lib/server/db/verify-contacts-list.mts` (11 live-DB checks)
+  - `(app)/+layout.svelte` (Contacts link in the shell), `seed-f03-demo.mts` (Cc a demo
+    contact so the list has a non-zero row)
+  - NEW `docs/notes/contacts.md`; `CLAUDE.md`, `docs/notes/ui.md`, `docs/demos/US-I01.md`
+- **Learnings for future iterations:**
+  - **A list of parents with stats over children needs a LEFT JOIN + `count(child.id)`**,
+    not the inbox list's INNER join. Same query shape, opposite rule: the inbox wants
+    "no visible child ⇒ not a row", contacts wants "no mail ⇒ still a contact, at 0".
+    `count(*)` would report 1 for the no-match row — count the child's id.
+  - **`emails` links to `contacts` by address, not by FK**, so any correspondence query
+    is `lower()`-compared on both sides (only `contacts.email` is normalized on write)
+    and has to `json_each` over the `to_emails`/`cc_emails` JSON columns. `json_each`
+    **errors on NULL**, so a nullable JSON column needs `coalesce(col, '[]')`.
+  - Aggregates selected through a `sql<...>` template bypass Drizzle's column modes — a
+    `timestamp_ms` column read as `max(...)` comes back as a raw number, not a `Date`.
+    Wrap it in the helper so callers can't be handed two different types for one field.
+  - A browser demo block that must survive `showboat verify` can't print the whole page
+    when the live DB also holds real rows — filter the rendered rows down to the seeded
+    fixture's stamp domain, the same way the live-DB scripts filter their assertions.
+  - The shell's top bar puts `ml-auto` on exactly one item (now the Contacts link) to
+    push the whole right-hand group over; adding a link means moving it, not adding a
+    second one.
+---

@@ -5,7 +5,7 @@
 // singleton, so this module never pulls in `$env/dynamic/private` and can be
 // exercised by a standalone `tsx` verification script.
 import { eq, sql } from 'drizzle-orm';
-import { contacts } from './schema';
+import { contacts, emails } from './schema';
 import type { Database } from './types';
 
 export type Contact = typeof contacts.$inferSelect;
@@ -52,6 +52,87 @@ export async function listContactsForSuggestions(
 		.select({ email: contacts.email, name: contacts.name })
 		.from(contacts)
 		.orderBy(sql`coalesce(${contacts.name}, ${contacts.email}) collate nocase`, contacts.email);
+}
+
+export type ContactListRow = {
+	id: string;
+	email: string;
+	name: string | null;
+	autoCreated: boolean;
+	/** Messages exchanged with this address, excluding soft-deleted ones. */
+	messageCount: number;
+	/** `received_at` of the most recent such message, or `null` for none. */
+	lastContactedAt: Date | null;
+};
+
+/**
+ * One line of SQL deciding whether an `emails` row counts as correspondence
+ * with a given contact: the contact either sent it or was addressed on it.
+ *
+ * `emails` stores addresses as plain text/JSON independent of `contacts` (see
+ * the contacts PRD's open question — a deleted contact must not rewrite
+ * history), so the link is by address, not by foreign key. `to_emails`/
+ * `cc_emails` are JSON arrays, hence `json_each`; `cc_emails` is nullable, so
+ * it needs the `coalesce` or `json_each` errors on a NULL argument. Comparison
+ * is `lower()`-ed on both sides for the same reason `getContactByEmail` is: the
+ * addresses in `emails` were never case-normalized.
+ *
+ * `bcc_emails` is deliberately not searched — a Bcc recipient is not part of
+ * the visible correspondence on the thread, and outbound sends record the same
+ * addresses in `to`/`cc` anyway when they are real correspondents.
+ */
+const CORRESPONDS_WITH_CONTACT = sql`
+	${emails.isDeleted} = 0
+	and (
+		lower(${emails.fromEmail}) = lower(${contacts.email})
+		or exists (
+			select 1 from json_each(${emails.toEmails}) as recipient
+			where lower(recipient.value) = lower(${contacts.email})
+		)
+		or exists (
+			select 1 from json_each(coalesce(${emails.ccEmails}, '[]')) as recipient
+			where lower(recipient.value) = lower(${contacts.email})
+		)
+	)
+`;
+
+/**
+ * Every contact with its correspondence stats, for `/contacts` (US-I01).
+ *
+ * One query, not one-per-row: the message count and the last-contacted stamp
+ * come from a single LEFT JOIN + GROUP BY over `emails`, so a contact with no
+ * surviving messages still renders (count 0, no timestamp) instead of dropping
+ * out of the list — the opposite of the inbox list's INNER join, where a thread
+ * with no visible message genuinely has nothing to show.
+ *
+ * Ordered alphabetically by display name falling back to the address, matching
+ * `listContactsForSuggestions` so the two views agree.
+ */
+export async function listContacts(db: Database): Promise<ContactListRow[]> {
+	const rows = await db
+		.select({
+			id: contacts.id,
+			email: contacts.email,
+			name: contacts.name,
+			autoCreated: contacts.autoCreated,
+			// Counting `emails.id` (not `*`) is what makes the LEFT JOIN's
+			// no-match row count as 0 rather than 1.
+			messageCount: sql<number>`count(${emails.id})`,
+			// Selected through `sql` rather than the column, so Drizzle's
+			// `timestamp_ms` mode does not apply — this comes back as a raw
+			// number of milliseconds (or null) and is wrapped below.
+			lastContactedAt: sql<number | null>`max(${emails.receivedAt})`
+		})
+		.from(contacts)
+		.leftJoin(emails, CORRESPONDS_WITH_CONTACT)
+		.groupBy(contacts.id)
+		.orderBy(sql`coalesce(${contacts.name}, ${contacts.email}) collate nocase`, contacts.email);
+
+	return rows.map((row) => ({
+		...row,
+		messageCount: Number(row.messageCount),
+		lastContactedAt: row.lastContactedAt == null ? null : new Date(Number(row.lastContactedAt))
+	}));
 }
 
 export type UpsertContactResult = {
