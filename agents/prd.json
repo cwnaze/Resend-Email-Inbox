@@ -482,8 +482,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 32,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "listContacts is one LEFT JOIN from contacts onto emails (address-based, json_each over to/cc, soft-deleted excluded, bcc not counted) so a contact with no mail still renders at 0. Route at (app)/contacts with a Contacts link in the shell. Verified by src/lib/server/db/verify-contacts-list.mts (11 live-DB checks) and in the browser via rodney; see docs/notes/contacts.md."
     },
     {
       "id": "US-I02",

@@ -187,7 +187,11 @@ if (cleanup) {
 			fromEmail: 'grace@example.com',
 			fromName: 'Grace Hopper',
 			toEmails: ['owner@example.com', 'ada@example.com'],
-			ccEmails: ['team@example.com'],
+			// One of the demo contacts is Cc'd (US-I01): that's what gives the
+			// contacts list a row with a real message count and last-contacted
+			// stamp, while the other two demo contacts stay at zero — which is
+			// the case `listContacts`' LEFT JOIN exists for.
+			ccEmails: ['team@example.com', `casey@${STAMP}.example`],
 			subject: `Re: ${STAMP} conversation`,
 			// HTML-only, to exercise the sandboxed-iframe rendering path (US-G02),
 			// with one remote image (blocked until "Load images") and one `data:`
