@@ -19,7 +19,14 @@ import {
 	validateComposeDraft,
 	MAX_CONTACT_SUGGESTIONS
 } from './addresses.ts';
-import { quoteOriginal, replyBody, replyRecipients, replySubject } from './reply.ts';
+import {
+	forwardBody,
+	forwardSubject,
+	quoteOriginal,
+	replyBody,
+	replyRecipients,
+	replySubject
+} from './reply.ts';
 
 let passed = 0;
 let failed = 0;
@@ -323,6 +330,68 @@ check(
 	'replying to a message this app sent to itself yields no recipient',
 	replyRecipients({ direction: 'outbound', fromEmail: own, toEmails: [own] }, own),
 	[]
+);
+
+console.log('forwardSubject (US-H04)');
+check('prefixes a plain subject', forwardSubject('Lunch?'), 'Fwd: Lunch?');
+check('does not double-prefix', forwardSubject('Fwd: Lunch?'), 'Fwd: Lunch?');
+check('recognises the Fw: short form', forwardSubject('Fw: Lunch?'), 'Fw: Lunch?');
+check('recognises it case-insensitively', forwardSubject('fwd: Lunch?'), 'fwd: Lunch?');
+check('a forward of a reply is prefixed', forwardSubject('Re: Lunch?'), 'Fwd: Re: Lunch?');
+check('only the outermost prefix counts', forwardSubject('Fwd: Re: Lunch?'), 'Fwd: Re: Lunch?');
+check('an empty subject stays empty rather than becoming a bare Fwd:', forwardSubject('  '), '');
+check(
+	'reply and forward prefixes do not cancel each other out',
+	replySubject(forwardSubject('Lunch?')),
+	'Re: Fwd: Lunch?'
+);
+
+console.log('forwardBody (US-H04)');
+check(
+	'the forwarded block carries the original envelope, all of it quoted',
+	forwardBody({
+		sender: 'Ada <ada@example.com>',
+		timestamp: 'Jan 2, 2026',
+		subject: 'Lunch?',
+		to: 'casey@caseynazelrod.com',
+		body: 'one\ntwo'
+	}),
+	'\n\n---------- Forwarded message ----------\n> From: Ada <ada@example.com>\n> Date: Jan 2, 2026\n> Subject: Lunch?\n> To: casey@caseynazelrod.com\n>\n> one\n> two\n'
+);
+check(
+	'a field the original did not have is omitted, not printed empty',
+	forwardBody({ sender: 'Ada', timestamp: 't', subject: '', to: '', body: 'hi' }),
+	'\n\n---------- Forwarded message ----------\n> From: Ada\n> Date: t\n>\n> hi\n'
+);
+check(
+	'a body-less message forwards its envelope and nothing else',
+	forwardBody({ sender: 'Ada', timestamp: 't', subject: 'S', to: 'x@y.com', body: '' }),
+	'\n\n---------- Forwarded message ----------\n> From: Ada\n> Date: t\n> Subject: S\n> To: x@y.com\n'
+);
+check(
+	'CRLF does not leave a stray carriage return inside the quote',
+	forwardBody({ sender: 'A', timestamp: 't', subject: '', to: '', body: 'one\r\ntwo' }),
+	'\n\n---------- Forwarded message ----------\n> From: A\n> Date: t\n>\n> one\n> two\n'
+);
+check(
+	'a pre-filled forward is NOT sendable until a recipient is typed',
+	validateComposeDraft({
+		to: '',
+		cc: '',
+		subject: forwardSubject('Lunch?'),
+		body: forwardBody({ sender: 'A', timestamp: 't', subject: 'Lunch?', to: '', body: 'hi' })
+	}).valid,
+	false
+);
+check(
+	'…and is sendable as soon as one is',
+	validateComposeDraft({
+		to: 'bob@example.com',
+		cc: '',
+		subject: forwardSubject('Lunch?'),
+		body: forwardBody({ sender: 'A', timestamp: 't', subject: 'Lunch?', to: '', body: 'hi' })
+	}).valid,
+	true
 );
 
 console.log(`\n${passed}/${passed + failed} checks passed`);

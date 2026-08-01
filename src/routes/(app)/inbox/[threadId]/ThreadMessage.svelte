@@ -60,6 +60,14 @@
 	const replyHref = $derived(
 		`${resolve('/(app)/compose')}?replyTo=${encodeURIComponent(message.id)}` as ResolvedPathname
 	);
+
+	// Forward (US-H04), built the same way and carrying the same single thing: the
+	// message id. The recipient is left for the owner to choose, and the subject,
+	// the quoted original and the attachments that ride along are all re-read from
+	// this row server-side.
+	const forwardHref = $derived(
+		`${resolve('/(app)/compose')}?forwardOf=${encodeURIComponent(message.id)}` as ResolvedPathname
+	);
 </script>
 
 <article class="border-b border-border px-4 py-5 last:border-b-0 sm:px-6">
@@ -179,6 +187,18 @@
 			class="rounded-sm px-2 py-1 font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent focus-visible:text-accent focus-visible:outline-1 focus-visible:outline-accent"
 		>
 			Reply
+		</a>
+		<!--
+			Forward (US-H04). A GET link like Reply, for the same reasons — opening a
+			pre-filled compose screen changes nothing — and carrying only this
+			message's id.
+		-->
+		<a
+			href={forwardHref}
+			aria-label={`Forward message from ${message.sender}`}
+			class="rounded-sm px-2 py-1 font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent focus-visible:text-accent focus-visible:outline-1 focus-visible:outline-accent"
+		>
+			Forward
 		</a>
 		<form method="POST" action="?/deleteMessage">
 			<input type="hidden" name="emailId" value={message.id} />

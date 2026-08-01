@@ -451,8 +451,8 @@
         "Verify in browser using dev-browser skill"
       ],
       "priority": 30,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Reply and forward are one mechanism: `composeSource(url)` reads `?replyTo=`/`?forwardOf=` in the load and again in the action, and the page renders one `data.context` ({mode, emailId, threadId, draft, attachments}) -- `data.reply` is gone. The id rides in the action URL (`?/send&forwardOf=...`) for US-H03's reason, and it matters more here because the attachments are looked up from it at send time. A forward clears To (its premise is a new recipient), starts a NEW thread and sets no In-Reply-To (both keyed off one `forwarding` flag). `forwardSubject`/`forwardBody` share reply.ts's SUBJECT_PREFIX and quoteBlock. Attachments are **copied** to `outbound/<email>/<source attachment>-<slug>` keys, never aliased onto the original's object; the pre-send read is fatal (mail cannot be un-sent) while the post-send copy is best-effort with a `warning`, and 25 MB is checked against stored size_bytes before any download. US-H05 adds the picker and, with it, the remove affordance the read-only list deliberately lacks."
     },
     {
       "id": "US-H05",

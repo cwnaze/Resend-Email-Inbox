@@ -39,15 +39,16 @@
 	// gesture is Send again. Failure keeps the draft (that is the point of FR-4);
 	// success clears it.
 	//
-	// A reply (US-H03) seeds from `data.reply.draft` instead — but only when the
-	// action has nothing to say. The precedence matters in both directions: a
-	// rejected submit must re-render what was *typed* (an echoed draft outranks the
-	// pre-fill, or editing a reply and getting it refused would silently restore
-	// the original recipient), and a successful send must clear the fields even
-	// though `?replyTo=` is still in the URL and the load is still handing back a
-	// pre-fill (or a sent reply leaves a fully loaded form whose only obvious
-	// gesture is to send it again).
-	const seed = untrack(() => (form ? (form.sent ? undefined : form.draft) : data.reply?.draft));
+	// A reply (US-H03) or a forward (US-H04) seeds from `data.context.draft`
+	// instead — but only when the action has nothing to say. The precedence
+	// matters in both directions: a rejected submit must re-render what was
+	// *typed* (an echoed draft outranks the pre-fill, or editing a reply and
+	// getting it refused would silently restore the original recipient), and a
+	// successful send must clear the fields even though `?replyTo=`/`?forwardOf=`
+	// is still in the URL and the load is still handing back a pre-fill (or a sent
+	// reply leaves a fully loaded form whose only obvious gesture is to send it
+	// again).
+	const seed = untrack(() => (form ? (form.sent ? undefined : form.draft) : data.context?.draft));
 	let to = $state(seed?.to ?? '');
 	let cc = $state(seed?.cc ?? '');
 	let subject = $state(seed?.subject ?? '');
@@ -77,20 +78,29 @@
 		return submitted || touched[field] ? validation.errors[field] : undefined;
 	}
 
+	/** What this screen is: a new message, a reply (US-H03) or a forward (US-H04). */
+	const heading = $derived(
+		data.context === null ? 'New message' : data.context.mode === 'reply' ? 'Reply' : 'Forward'
+	);
+
 	/**
-	 * Where the form POSTs — `?/send`, plus `replyTo` when this is a reply.
+	 * Where the form POSTs — `?/send`, plus the source id when there is one.
 	 *
 	 * The parameter rides in the **action URL**, not in a hidden input, because a
 	 * form action's query *replaces* the page's: posting to a bare `?/send` lands
 	 * on `/compose?/send` with no `replyTo`, so the page that renders a rejected
 	 * send would re-render as an ordinary new message — same fields, but the next
 	 * Send would start a new thread instead of continuing the conversation, and
-	 * nothing on screen would say so. Carrying it here keeps the reply a reply
-	 * across a retry, and keeps the *load* and the *action* reading the id from the
-	 * same place (`url.searchParams`) rather than from two sources that can differ.
+	 * nothing on screen would say so. A forward has *more* riding on this than a
+	 * reply: its attachments are looked up from that id at send time, so losing it
+	 * across a rejected submit would silently drop the files.
 	 */
-	const replyAction = $derived(
-		data.reply ? `?/send&replyTo=${encodeURIComponent(data.reply.emailId)}` : '?/send'
+	const sendAction = $derived(
+		data.context === null
+			? '?/send'
+			: data.context.mode === 'reply'
+				? `?/send&replyTo=${encodeURIComponent(data.context.emailId)}`
+				: `?/send&forwardOf=${encodeURIComponent(data.context.emailId)}`
 	);
 
 	/**
@@ -110,15 +120,15 @@
 </script>
 
 <svelte:head>
-	<title>{data.reply ? 'Reply' : 'Compose'} — dusk inbox</title>
+	<title>{data.context === null ? 'Compose' : heading} — dusk inbox</title>
 </svelte:head>
 
 <section class="mx-auto flex w-full max-w-3xl flex-col">
 	<header class="border-b border-border px-4 py-4 sm:px-6">
-		<!-- A reply goes back where it was started from, not to the list. -->
-		{#if data.reply}
+		<!-- A reply or forward goes back where it was started from, not to the list. -->
+		{#if data.context}
 			<a
-				href={resolve('/(app)/inbox/[threadId]', { threadId: data.reply.threadId })}
+				href={resolve('/(app)/inbox/[threadId]', { threadId: data.context.threadId })}
 				class="font-mono text-xs text-text-muted transition-colors duration-fast ease-standard hover:text-accent"
 			>
 				← Thread
@@ -131,9 +141,7 @@
 				← Inbox
 			</a>
 		{/if}
-		<h1 class="mt-2 text-base font-semibold text-text-primary">
-			{data.reply ? 'Reply' : 'New message'}
-		</h1>
+		<h1 class="mt-2 text-base font-semibold text-text-primary">{heading}</h1>
 	</header>
 
 	<!--
@@ -145,7 +153,7 @@
 	<form
 		id="compose-form"
 		method="POST"
-		action={replyAction}
+		action={sendAction}
 		class="flex flex-col gap-4 px-4 py-4 sm:px-6"
 		novalidate
 		oninput={onFormInput}
@@ -210,6 +218,30 @@
 			></textarea>
 		</div>
 
+		<!--
+			The files a forward is carrying (US-H04). Read-only, and there is nothing
+			to remove: they are the original message's attachments, looked up
+			server-side from `?forwardOf=` at send time, so a control here could only
+			lie about what will be sent. It is still shown, because "the attachments
+			come too" is the one thing about Forward a sender would otherwise have to
+			take on faith. US-H05 adds the picker, and with it the remove affordance.
+		-->
+		{#if data.context && data.context.attachments.length > 0}
+			<div class="flex flex-col gap-1">
+				<h2 class="font-mono text-xs text-text-muted">
+					Forwarded {data.context.attachments.length === 1 ? 'attachment' : 'attachments'}
+				</h2>
+				<ul class="flex flex-col gap-1">
+					{#each data.context.attachments as attachment (attachment.filename + attachment.size)}
+						<li class="flex items-baseline gap-2 font-mono text-xs text-text-primary">
+							<span class="min-w-0 break-all">{attachment.filename}</span>
+							<span class="shrink-0 text-text-muted">{attachment.size}</span>
+						</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
+
 		{#if showError('content')}
 			<p role="alert" class="font-sans text-sm text-danger">{validation.errors.content}</p>
 		{/if}
@@ -250,7 +282,13 @@
 						href={resolve('/(app)/inbox/[threadId]', { threadId: form.threadId })}
 						class="text-accent underline decoration-dotted underline-offset-2">View the thread</a
 					>.
-				{:else if form.warning}
+				{/if}
+				<!--
+					Shown alongside the link, not instead of it: US-H04's attachment copy
+					can fail while the `emails` row itself stored fine, so a warning and a
+					thread to link to are no longer mutually exclusive.
+				-->
+				{#if form.warning}
 					{form.warning}
 				{/if}
 			</p>
