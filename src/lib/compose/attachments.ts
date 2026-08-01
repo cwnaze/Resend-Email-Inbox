@@ -113,6 +113,20 @@ export type AttachmentItem = {
 };
 
 /**
+ * The rows that are **not** ready to be sent — still uploading, or failed.
+ *
+ * The Send gate is this, not just "is anything uploading". Only a row with a key
+ * reaches the hidden `attachments` field, so sending while either state is on
+ * screen produces a message that lists a file it does not carry — the same
+ * "says see attached and doesn't" failure `server/outbound/uploads.ts` refuses a
+ * send over, reached from the client side instead. A failed row is cleared by
+ * removing it, which is why Remove is on every row including a failed one.
+ */
+export function unsettledAttachments(items: AttachmentItem[]): AttachmentItem[] {
+	return items.filter((item) => item.status !== 'ready');
+}
+
+/**
  * Reads the hidden `attachments` field back out of a submitted form.
  *
  * Everything here is untrusted: the field is a JSON string in a form the owner's

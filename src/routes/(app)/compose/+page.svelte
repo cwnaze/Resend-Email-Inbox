@@ -23,7 +23,7 @@
 	import AttachmentField from './AttachmentField.svelte';
 	import ErrorMessage from '$lib/components/ErrorMessage.svelte';
 	import { validateComposeDraft } from '$lib/compose/addresses';
-	import type { AttachmentItem } from '$lib/compose/attachments';
+	import { unsettledAttachments, type AttachmentItem } from '$lib/compose/attachments';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -80,7 +80,11 @@
 		)
 	);
 
-	const uploading = $derived(attachments.some((attachment) => attachment.status === 'uploading'));
+	// Both unfinished states, not just the in-flight one: a *failed* upload has no
+	// key either, so sending past one produces a message that lists a file it does
+	// not carry. See `unsettledAttachments`.
+	const unsettled = $derived(unsettledAttachments(attachments));
+	const uploading = $derived(unsettled.some((attachment) => attachment.status === 'uploading'));
 
 	/** What a forward already commits to the per-message size limit (US-H04). */
 	const forwardedBytes = $derived(
@@ -300,13 +304,14 @@
 			<!--
 				Also unavailable while a file is still uploading (US-H05): the hidden
 				`attachments` field only carries files that already have an R2 key, so a
-				send that raced an upload would go out without it and nothing on screen
-				would ever say so. Still inside the `browser &&` guard — with no
-				JavaScript there are no uploads to wait for.
+				send that raced an upload — or that ignored one which failed — would go
+				out without the file while the screen still lists it, and nothing would
+				ever say so. Still inside the `browser &&` guard: with no JavaScript
+				there is no picker and so nothing unsettled to wait for.
 			-->
 			<button
 				type="submit"
-				disabled={browser && (!validation.valid || uploading)}
+				disabled={browser && (!validation.valid || unsettled.length > 0)}
 				class="rounded border border-accent bg-accent/15 px-3 py-1.5 font-mono text-sm text-accent transition-colors duration-fast ease-standard hover:bg-accent/25 focus-visible:border-text-primary focus-visible:outline-none disabled:cursor-not-allowed disabled:border-border disabled:bg-surface disabled:text-text-muted"
 			>
 				Send
@@ -317,6 +322,15 @@
 			{:else if uploading}
 				<p class="font-sans text-sm text-text-muted">
 					Waiting for attachments to finish uploading…
+				</p>
+			{:else if unsettled.length > 0}
+				<!--
+					Nothing is in flight, so what is left is a failed upload. Say so where
+					the Send button is, not only in the list: the button being unavailable
+					is the thing the owner is looking at, and "remove it" is the way out.
+				-->
+				<p class="font-sans text-sm text-text-muted">
+					Remove the {unsettled.length === 1 ? 'attachment that' : 'attachments that'} failed to upload.
 				</p>
 			{/if}
 		</div>

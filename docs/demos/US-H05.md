@@ -65,8 +65,11 @@ attachments (US-H05)
   ok   a nonsense size is clamped to zero rather than poisoning the running total
   ok   the total is the sum, and the limit is exclusive of nothing below it
   ok   …and one byte over is over
+  ok   a ready row is settled and does not gate Send
+  ok   an in-flight upload gates Send
+  ok   and so does a FAILED one — it has no key either, so sending would list a file the mail does not carry
 
-99/99 checks passed
+102/102 checks passed
 ```
 
 The server half, against the live database with R2 stubbed. The two checks that matter most: R2's size wins over the form's (and the size check runs over the HEADs *before* any download, so an oversized send costs metadata requests rather than 25 MB of transfer), and the per-message limit spans both sources.
@@ -240,5 +243,7 @@ The screen with two files attached: the `+ Attach` button paired with a drop zon
 ```
 
 ![The compose screen with two attachments: an "Attachments" section holding a "+ Attach" button and a dashed drop zone reading "or drop files here — up to 25 MB in total", then notes-h05.txt (25 B) and payload-h05.txt (400 KB) each with a Remove control, above an enabled Send button](eac73d59-2026-08-01.png)
+
+-
 
 -

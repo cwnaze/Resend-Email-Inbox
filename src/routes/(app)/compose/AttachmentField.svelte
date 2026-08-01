@@ -64,7 +64,24 @@
 	 */
 	function settle(id: string, patch: Partial<AttachmentItem>) {
 		const item = items.find((candidate) => candidate.id === id);
-		if (item) Object.assign(item, patch);
+		if (item) {
+			Object.assign(item, patch);
+			return;
+		}
+		// The row is gone: the owner hit Remove while this upload was in flight, so
+		// `remove()` had no key to send a DELETE for and the PUT landed anyway.
+		// Sweep it here, where the key finally exists — otherwise the object sits in
+		// `outbound/pending/` forever with no send coming to claim or clear it.
+		if (patch.key) discard(patch.key);
+	}
+
+	/** Fire-and-forget delete of a pending object the draft no longer wants. */
+	function discard(key: string) {
+		void fetch(uploadsUrl, {
+			method: 'DELETE',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ key })
+		}).catch((error) => console.error('attachment discard failed:', error));
 	}
 
 	async function upload(id: string, file: File) {
@@ -131,13 +148,10 @@
 		// forget: the file is gone from the draft either way, and the endpoint only
 		// accepts `outbound/pending/` keys, so the worst case is one orphan under the
 		// prefix that exists to hold unclaimed uploads.
-		if (item.key) {
-			void fetch(uploadsUrl, {
-				method: 'DELETE',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ key: item.key })
-			}).catch((error) => console.error('attachment discard failed:', error));
-		}
+		//
+		// A row removed *mid-upload* has no key yet — `settle()` sweeps that one when
+		// the PUT finally lands and finds its row gone.
+		if (item.key) discard(item.key);
 	}
 
 	function onDrop(event: DragEvent) {
@@ -227,10 +241,15 @@
 
 	<!--
 		What actually submits: the keys of the files already in R2, rendered from the
-		same list the owner is looking at. A file still uploading has no key and so
-		is absent — which is safe rather than silent, because the page keeps Send
-		unavailable while `isUploading()` holds. A *failed* upload is likewise absent
-		and stays visible in the list, so the owner can remove it or retry.
+		same list the owner is looking at.
+
+		A file that is still uploading, or whose upload failed, has no key and so is
+		absent from this field — which is why the page's Send button is gated on
+		`unsettledAttachments(items)` covering *both* states, not just the in-flight
+		one. Leaving a failed row out of that gate would let the owner send a message
+		listing a file it does not carry: the same "says see attached and doesn't"
+		failure the server treats as fatal before a send, arrived at from the client
+		side instead. The way past a failed upload is Remove, which is on every row.
 	-->
 	<input
 		type="hidden"

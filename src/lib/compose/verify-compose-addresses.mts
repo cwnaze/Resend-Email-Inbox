@@ -32,7 +32,8 @@ import {
 	composeAttachmentFilename,
 	isAttachmentTotalTooLarge,
 	isPendingAttachmentKey,
-	parsePendingAttachments
+	parsePendingAttachments,
+	unsettledAttachments
 } from './attachments.ts';
 
 let passed = 0;
@@ -489,6 +490,29 @@ check(
 	'…and one byte over is over',
 	isAttachmentTotalTooLarge([{ sizeBytes: MAX_ATTACHMENT_TOTAL_BYTES }, { sizeBytes: 1 }]),
 	true
+);
+
+const row = (id: string, status: 'uploading' | 'ready' | 'failed', key: string | null) => ({
+	id,
+	filename: `${id}.pdf`,
+	sizeBytes: 1,
+	key,
+	status
+});
+check(
+	'a ready row is settled and does not gate Send',
+	unsettledAttachments([row('a', 'ready', goodKey)]),
+	[]
+);
+check(
+	'an in-flight upload gates Send',
+	unsettledAttachments([row('a', 'uploading', null)]).length,
+	1
+);
+check(
+	'and so does a FAILED one — it has no key either, so sending would list a file the mail does not carry',
+	unsettledAttachments([row('a', 'ready', goodKey), row('b', 'failed', null)]).map((i) => i.id),
+	['b']
 );
 
 console.log(`\n${passed}/${passed + failed} checks passed`);
