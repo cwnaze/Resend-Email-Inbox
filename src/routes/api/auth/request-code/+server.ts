@@ -8,7 +8,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import {
-	createAuthCode,
+	createAuthCodeWithinRateLimit,
 	deleteAuthCode,
 	getAuthCodeRequestWindow,
 	hashAuthCode,
@@ -29,14 +29,26 @@ export const POST: RequestHandler = async () => {
 	const now = new Date();
 	const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS);
 
-	// One aggregate query gives both the window count and the oldest request in
-	// it — the oldest is the next to age out, so it's what "try again in N" is
-	// measured from.
-	const { count: recentRequestCount, oldestCreatedAt } = await getAuthCodeRequestWindow(
+	const code = generateCode();
+	const expiresAt = new Date(now.getTime() + CODE_TTL_MS);
+
+	// The rate-limit check and the insert are one statement: the count is
+	// derived from the rows this endpoint writes, so checking separately would
+	// let concurrent unauthenticated POSTs all read the same pre-insert count,
+	// all pass, and all send an email. A `null` here means the window was full.
+	const codeId = await createAuthCodeWithinRateLimit(
 		db,
-		windowStart
+		hashAuthCode(code),
+		expiresAt,
+		windowStart,
+		RATE_LIMIT_MAX_REQUESTS
 	);
-	if (recentRequestCount >= RATE_LIMIT_MAX_REQUESTS) {
+
+	if (codeId === null) {
+		// Only the throttled path pays for this read, and it's purely cosmetic:
+		// the oldest request in the window is the next to age out, so it's what
+		// "try again in N" is measured from.
+		const { oldestCreatedAt } = await getAuthCodeRequestWindow(db, windowStart);
 		const retryAtMs = (oldestCreatedAt?.getTime() ?? now.getTime()) + RATE_LIMIT_WINDOW_MS;
 		const retryAfterSeconds = Math.max(1, Math.ceil((retryAtMs - now.getTime()) / 1000));
 		return json(
@@ -54,11 +66,10 @@ export const POST: RequestHandler = async () => {
 		);
 	}
 
-	await invalidateActiveAuthCodes(db, now);
-
-	const code = generateCode();
-	const expiresAt = new Date(now.getTime() + CODE_TTL_MS);
-	const row = await createAuthCode(db, hashAuthCode(code), expiresAt);
+	// Supersede the previous code only now that its replacement actually exists,
+	// exempting the row we just wrote — it is unused and unexpired, so it would
+	// otherwise match and expire itself.
+	await invalidateActiveAuthCodes(db, now, codeId);
 
 	try {
 		await sendAuthCodeEmail(code);
@@ -67,7 +78,7 @@ export const POST: RequestHandler = async () => {
 		// email never went out is unusable: keeping it would leave the user with
 		// no valid code (the previous one was just superseded) *and* burn one of
 		// their three requests per window. Roll it back and let them retry.
-		await deleteAuthCode(db, row.id);
+		await deleteAuthCode(db, codeId);
 		console.error('auth code email failed, rolled back code row:', err);
 		return json({ error: 'Could not send the code. Please try again.' }, { status: 502 });
 	}
