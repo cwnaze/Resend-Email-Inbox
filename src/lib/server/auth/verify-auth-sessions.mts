@@ -26,7 +26,9 @@ import { drizzle } from 'drizzle-orm/libsql';
 import * as schema from '../db/schema.js';
 import {
 	createAuthCode,
+	createAuthCodeWithinRateLimit,
 	getActiveAuthCode,
+	getAuthCodeRequestWindow,
 	incrementAuthCodeAttempts,
 	invalidateActiveAuthCodes,
 	markAuthCodeUsed
@@ -113,6 +115,57 @@ try {
 
 	const afterInvalidate = await getActiveAuthCode(db, now);
 	check('no active code remains after invalidation', afterInvalidate === null);
+
+	// --- createAuthCodeWithinRateLimit: the check and the insert must be one
+	// statement, or concurrent unauthenticated POSTs all read the same
+	// pre-insert count and all send an email.
+	//
+	// The limit is expressed relative to whatever is already in the window so
+	// this test is self-contained against the shared database: allow exactly two
+	// more than the current count, fire ten inserts at once, and require that
+	// exactly two win.
+	const windowStart = new Date(now.getTime() - tenMinutes);
+	const { count: baseline } = await getAuthCodeRequestWindow(db, windowStart);
+	const burst = await Promise.all(
+		Array.from({ length: 10 }, (_, i) =>
+			createAuthCodeWithinRateLimit(
+				db,
+				`hash-of-burst-code-${i}`,
+				new Date(now.getTime() + tenMinutes),
+				windowStart,
+				baseline + 2
+			)
+		)
+	);
+	const admitted = burst.filter((id): id is string => id !== null);
+	createdAuthCodeIds.push(...admitted);
+	check(
+		'createAuthCodeWithinRateLimit admits exactly the remaining quota under a concurrent burst',
+		admitted.length === 2
+	);
+	const { count: afterBurst } = await getAuthCodeRequestWindow(db, windowStart);
+	check(
+		'the burst wrote exactly as many rows as it reported admitting',
+		afterBurst === baseline + admitted.length
+	);
+	check(
+		'createAuthCodeWithinRateLimit returns null once the window is full',
+		(await createAuthCodeWithinRateLimit(
+			db,
+			'hash-of-over-limit-code',
+			new Date(now.getTime() + tenMinutes),
+			windowStart,
+			baseline + 2
+		)) === null
+	);
+
+	// The endpoint creates the replacement code *before* superseding the old
+	// one, so the exemption is what stops it expiring the code it just minted.
+	const keptId = admitted[0];
+	await invalidateActiveAuthCodes(db, now, keptId);
+	const stillActive = await getActiveAuthCode(db, now);
+	check('invalidateActiveAuthCodes leaves the exempted row active', stillActive?.id === keptId);
+	await invalidateActiveAuthCodes(db, now);
 
 	// A superseded code must stay distinguishable from a redeemed one: it is
 	// expired, not used, so US-B03 can report the accurate reason.

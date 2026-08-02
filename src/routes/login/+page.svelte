@@ -107,6 +107,12 @@
 		// validation never runs. This also normalizes the "123 456" / "123-456"
 		// shapes people paste out of an email client.
 		code = event.currentTarget.value.replace(/\D/g, '').slice(0, 6);
+		// Write the stripped value straight back to the DOM. `value={code}` is
+		// one-way, and assigning `code` its *current* value doesn't invalidate —
+		// so when every character typed or pasted is a non-digit, `code` stays
+		// unchanged, nothing re-renders, and the field keeps displaying the
+		// rejected text until a digit finally lands.
+		event.currentTarget.value = code;
 		// Drop the previous failure as soon as the user starts correcting it —
 		// otherwise the UI reads as failing through the whole retype.
 		errorMessage = null;

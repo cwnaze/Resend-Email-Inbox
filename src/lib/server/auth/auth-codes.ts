@@ -19,7 +19,7 @@
 //     invalidates the code (US-B03) — that threshold check lives in the
 //     verify-code endpoint itself, this module just persists the count.
 import { createHash } from 'node:crypto';
-import { and, count, desc, eq, gt, gte, isNull, min, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, gte, isNull, min, ne, sql } from 'drizzle-orm';
 import { authCodes } from '../db/schema';
 import type { Database } from '../db/types';
 
@@ -45,6 +45,45 @@ export function hashAuthCode(code: string): string {
 export async function createAuthCode(database: Database, codeHash: string, expiresAt: Date) {
 	const [row] = await database.insert(authCodes).values({ codeHash, expiresAt }).returning();
 	return row;
+}
+
+/**
+ * Inserts a new auth_codes row **only if** fewer than `maxRequests` rows were
+ * created at/after `windowStart`, and returns its id — or `null` if the window
+ * is already full. The caller turns `null` into the 429.
+ *
+ * This is deliberately one `INSERT ... SELECT ... WHERE (SELECT count(*) …)`
+ * statement rather than `getAuthCodeRequestWindow` + `createAuthCode`. The
+ * two-statement form is a TOCTOU: the count the check reads is derived from the
+ * very rows the insert writes, and nothing serializes them, so N concurrent
+ * POSTs to the unauthenticated request-code endpoint all read the same
+ * pre-insert count, all pass the check, and all insert *and send an email*.
+ * Evaluating the count inside the writing statement is what makes the limit
+ * hold — SQLite/libSQL serializes writers, so each insert sees every insert
+ * that committed before it.
+ *
+ * `id` is generated here because the column's default is a JS `$defaultFn`,
+ * which raw SQL does not go through; `created_at` and `attempt_count` do have
+ * real SQL defaults and are left to them.
+ */
+export async function createAuthCodeWithinRateLimit(
+	database: Database,
+	codeHash: string,
+	expiresAt: Date,
+	windowStart: Date,
+	maxRequests: number
+): Promise<string | null> {
+	const id = crypto.randomUUID();
+	const rows = await database.all<{ id: string }>(sql`
+		insert into ${authCodes} (${sql.identifier('id')}, ${sql.identifier('code_hash')}, ${sql.identifier('expires_at')})
+		select ${id}, ${codeHash}, ${expiresAt.getTime()}
+		where (
+			select count(*) from ${authCodes}
+			where ${authCodes.createdAt} >= ${windowStart.getTime()}
+		) < ${maxRequests}
+		returning ${sql.identifier('id')}
+	`);
+	return rows[0]?.id ?? null;
 }
 
 /**
@@ -74,12 +113,28 @@ export async function getActiveAuthCode(database: Database, now: Date = new Date
  * `auth_codes` answerable for "was this code ever redeemed?" (audit, debugging
  * a login complaint) and lets US-B03 report the accurate reason — a superseded
  * code reads as expired, not as already used.
+ *
+ * `exceptId` exempts one row. Callers that create the replacement code *first*
+ * (so the rate limit can gate the insert atomically — see
+ * `createAuthCodeWithinRateLimit`) must pass the new row's id, or this would
+ * immediately expire the code it just minted: the new row is itself unused and
+ * unexpired, so it matches this predicate.
  */
-export async function invalidateActiveAuthCodes(database: Database, now: Date = new Date()) {
+export async function invalidateActiveAuthCodes(
+	database: Database,
+	now: Date = new Date(),
+	exceptId?: string
+) {
 	const rows = await database
 		.update(authCodes)
 		.set({ expiresAt: now })
-		.where(and(isNull(authCodes.usedAt), gt(authCodes.expiresAt, now)))
+		.where(
+			and(
+				isNull(authCodes.usedAt),
+				gt(authCodes.expiresAt, now),
+				exceptId ? ne(authCodes.id, exceptId) : undefined
+			)
+		)
 		.returning({ id: authCodes.id });
 	return rows.length;
 }
