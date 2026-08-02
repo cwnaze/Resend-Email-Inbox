@@ -62,6 +62,64 @@ export async function sendAuthCodeEmail(code: string) {
 }
 
 /**
+ * Sender of the contact-form auto-reply.
+ *
+ * `no-reply@` rather than the apex `casey@`: this is an automated
+ * acknowledgement, and a submitter who hits reply should be told to write to a
+ * monitored address instead of having their follow-up arrive looking like a
+ * reply to a robot.
+ */
+const NO_REPLY_SENDER_EMAIL = 'no-reply@caseynazelrod.com';
+
+/** Where a contact-form submitter is told to write for anything further. */
+export const CONTACT_REPLY_TO_EMAIL = 'casey@caseynazelrod.com';
+
+/**
+ * Acknowledges a contact-form submission to the person who sent it.
+ *
+ * **The submitter's message is deliberately not quoted back.** The recipient
+ * here is an address typed into a public form by an unauthenticated stranger, so
+ * anything this email contains is something anyone can cause to be sent, from
+ * this domain, to any address they choose. Echoing the message body would turn
+ * the contact form into a way to send arbitrary text to arbitrary people over
+ * caseynazelrod.com's reputation. The body is therefore fixed; only the greeting
+ * varies, and the name behind it is length-capped and stripped of control
+ * characters by `validateSubmission`.
+ *
+ * `replyTo` still points at the monitored address — a submitter who ignores the
+ * "don't reply here" line should land somewhere real rather than nowhere.
+ *
+ * Returns nothing and throws nothing on a provider failure: the caller has
+ * already stored the submission, and a failed courtesy email must never turn a
+ * successfully-received message into an error the sender sees.
+ */
+export async function sendContactAutoReply(to: string, name: string): Promise<void> {
+	const text = [
+		`Hi ${name},`,
+		'',
+		"Thanks for reaching out — your message came through, and I'll get back to you as soon as I can.",
+		'',
+		`This address isn't monitored, so if you need anything else in the meantime, write to me directly at ${CONTACT_REPLY_TO_EMAIL}.`,
+		'',
+		'— Casey'
+	].join('\n');
+
+	try {
+		const { error } = await getClient().emails.send({
+			from: NO_REPLY_SENDER_EMAIL,
+			to,
+			replyTo: CONTACT_REPLY_TO_EMAIL,
+			subject: 'Thanks for getting in touch',
+			text
+		});
+		if (error) console.error('Resend contact auto-reply send failed:', error);
+	} catch (err) {
+		// A transport-level throw is the same non-event as a provider error here.
+		console.error('Resend contact auto-reply threw:', err);
+	}
+}
+
+/**
  * The address outbound mail is sent as (US-H02, FR-1).
  *
  * A server-side constant like `AUTH_SENDER_EMAIL`, not a request input and not
